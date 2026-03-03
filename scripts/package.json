@@ -1,7 +1,7 @@
 {
   "name": "zo-memory-system",
-  "version": "1.0.0",
-  "description": "SQLite-based memory system for Zo Computer personas",
+  "version": "2.3.0",
+  "description": "Hybrid SQLite + Vector persona memory system with Ollama-powered memory gate for Zo Computer",
   "type": "module",
   "scripts": {
     "memory": "bun memory.ts",

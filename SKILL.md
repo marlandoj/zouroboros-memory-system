@@ -1,17 +1,17 @@
 ---
 name: zo-memory-system
-description: Hybrid SQLite + Vector persona memory system for Zo Computer. Gives personas persistent memory with semantic search (nomic-embed-text), HyDE query expansion (qwen2.5:1.5b), 5-tier decay, and swarm integration. Requires Ollama for embeddings.
+description: Hybrid SQLite + Vector persona memory system for Zo Computer. Gives personas persistent memory with semantic search (nomic-embed-text), HyDE query expansion (qwen2.5:1.5b), Ollama-powered memory gate, 5-tier decay, and swarm integration. Requires Ollama for embeddings.
 compatibility: Created for Zo Computer. Requires Bun and Ollama.
 metadata:
   author: marlandoj.zo.computer
-  updated: 2026-02-22
-  version: 2.2.0
+  updated: 2026-03-03
+  version: 2.3.0
 ---
-# Zo Memory System Skill v2.2.0
+# Zo Memory System Skill v2.3.0
 
 Give your Zo personas persistent memory with semantic understanding.
 
-**v2.2 Updates:** Ollama health checks, fetch timeouts, prune/decay/consolidate/link/graph commands, vector pre-filtering, adaptive decay, associative routing
+**v2.3 Updates:** Ollama-powered memory gate (memory-gate.ts), always-on context injection via Zo rules, 24h model keep-alive, gate-filtered token savings (40-60% of messages filtered)
 
 ---
 
@@ -27,6 +27,9 @@ Give your Zo personas persistent memory with semantic understanding.
 - **Associative routing** — Graph links between related facts (link/graph commands)
 - **Memory consolidation** — Automatic deduplication and merging of related facts
 - **Swarm integration** — Token-optimized memory for multi-agent workflows
+- **Memory gate** — Ollama-powered relevance filter (memory-gate.ts) that classifies messages before searching
+- **Always-on injection** — Zo rule integration for automatic context injection on every message
+- **Gate-filtered savings** — 40-60% of messages filtered as not needing memory (zero extra tokens)
 - **Health checks** — Ollama connectivity and model validation at startup
 - **Fetch timeouts** — 15s timeout on all Ollama calls (prevents indefinite hangs)
 - **Scheduled maintenance** — Hourly prune/decay automation
@@ -159,6 +162,72 @@ bun scripts/memory.ts graph --id <fact-id>
 
 ---
 
+## Memory Gate (Always-On Context Injection)
+
+The memory gate (`scripts/memory-gate.ts`) uses a local Ollama model to classify incoming messages and decide whether memory context should be injected. This enables always-on memory without injecting into every message.
+
+### How it works
+
+1. User sends a message
+2. Gate model (qwen2.5:1.5b) classifies: does this message need stored memory?
+3. If no: message passes through with zero overhead
+4. If yes: gate extracts keywords, runs hybrid search, injects results as context
+
+### Usage
+
+```bash
+# Direct invocation
+bun scripts/memory-gate.ts "what did we decide about FFB pricing?"
+# Exit 0 + results printed
+
+bun scripts/memory-gate.ts "hello"
+# Exit 2 (no memory needed, no output)
+
+bun scripts/memory-gate.ts "update the supplier scorecard"
+# Exit 0 + results printed (or exit 3 if no results found)
+```
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Memory results found and printed |
+| 1 | Error (Ollama down, parse failure) |
+| 2 | No memory needed (greeting, general knowledge, self-contained request) |
+| 3 | Memory needed but no results found |
+
+### Zo rule integration
+
+Create an always-applied Zo rule that runs the gate on every message:
+
+```
+Run: bun /home/workspace/Skills/zo-memory-system/scripts/memory-gate.ts "<message>"
+- Exit 0: inject stdout as background context
+- Exit 2: skip (no memory needed)
+- Exit 3: skip (no results)
+```
+
+### Configuration
+
+```bash
+export ZO_GATE_MODEL="qwen2.5:1.5b"  # Default gate model
+export OLLAMA_URL="http://localhost:11434"
+```
+
+The gate uses `keep_alive: "24h"` to keep the model loaded in memory. A daily scheduled agent should ping the model to prevent cold starts (~35-58s on first load vs ~5-7s warm).
+
+### Performance in multi-agent swarms
+
+The gate is what makes this memory system viable for swarm workflows. Without gating, always-on injection consumes 34-120% of an 8K context budget across 11 tasks. With gating, only ~4 of 11 tasks get memory injection, keeping consumption at 2.5-6.9%.
+
+| Metric | With gate | Without gate (always-on) |
+|--------|-----------|--------------------------|
+| Tasks injected | ~4 of 11 | All 11 |
+| Memory tokens per swarm run | 800-2,200 | 12,100-38,500 |
+| % of 8K context budget | 2.5-6.9% | 34-120% |
+
+---
+
 ## Architecture
 
 ```
@@ -176,6 +245,7 @@ bun scripts/memory.ts graph --id <fact-id>
 │   └── [timestamp].json     # Saved states
 └── scripts/
     ├── memory.ts            # Main CLI (v2)
+    ├── memory-gate.ts       # Ollama-powered relevance gate (v2.3)
     ├── add-persona.sh       # Persona setup helper
     └── schema.sql           # Database schema
 ```
@@ -215,6 +285,7 @@ export ZO_MEMORY_DB="/path/to/shared-facts.db"  # Default: .zo/memory/
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 2.3.0 | 2026-03-03 | Memory gate (memory-gate.ts), always-on context injection via Zo rules, 24h model keep-alive, gate-filtered token savings for swarm workflows |
 | 2.2.0 | 2026-02-27 | Ollama health check, fetch timeouts, prune/decay/consolidate/link/graph commands, vector pre-filtering, adaptive decay, associative routing, PRAGMA busy_timeout |
 | 2.1.0 | 2026-02-22 | Parallelized HyDE/FTS/embedding execution, optimized for qwen2.5:1.5b, performance docs |
 | 2.0.0 | 2026-02-19 | Hybrid SQLite + Vector search, HyDE query expansion, semantic retrieval, nomic-embed-text via Ollama |
