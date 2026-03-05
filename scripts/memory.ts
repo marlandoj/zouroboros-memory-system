@@ -14,6 +14,7 @@
 import { Database } from "bun:sqlite";
 import { randomUUID, createHash } from "crypto";
 import { join } from "path";
+import { computeGraphBoost, findGraphNeighbors } from "./graph-boost";
 
 // --- Configuration ---
 const DB_PATH = process.env.ZO_MEMORY_DB || "/home/workspace/.zo/memory/shared-facts.db";
@@ -345,30 +346,59 @@ async function hybridSearch(
     vecPos++;
   }
   
-  // Calculate final scores
-  const finalResults: Array<{ entry: MemoryEntry; score: number; sources: string[] }> = [];
-  
+  // Calculate RRF scores and prepare for graph boost
+  const preBoosted: Array<{ id: string; entry: MemoryEntry; rrfScore: number; freshness: number; confidence: number; sources: string[] }> = [];
+
   for (const [id, result] of scores) {
     let rrfScore = 0;
     if (result.ftsRank) rrfScore += 1 / (k + result.ftsRank);
     if (result.vecScore) rrfScore += 1 / (k + result.vecScore);
-    
-    // Add freshness and confidence
-    const nowSec = Math.floor(Date.now() / 1000);
+
+    const nowSec2 = Math.floor(Date.now() / 1000);
     let freshness = 1;
     if (result.entry.expiresAt) {
-      freshness = Math.max(0, Math.min(1, (result.entry.expiresAt - nowSec) / (14 * 24 * 3600)));
+      freshness = Math.max(0, Math.min(1, (result.entry.expiresAt - nowSec2) / (14 * 24 * 3600)));
     }
-    
-    const composite = rrfScore * 0.7 + freshness * 0.2 + result.entry.confidence * 0.1;
-    
-    finalResults.push({
+
+    preBoosted.push({
+      id,
       entry: result.entry,
-      score: composite,
+      rrfScore,
+      freshness,
+      confidence: result.entry.confidence,
       sources: result.sources,
     });
   }
-  
+
+  // Apply graph boost (reweights composite scores when links exist)
+  const boosted = computeGraphBoost(db, preBoosted);
+
+  // Inject graph-discovered neighbors (facts linked to top results but not in current set)
+  const topIds = boosted
+    .sort((a, b) => b.composite - a.composite)
+    .slice(0, 3)
+    .map(r => r.id);
+  const existingIds = new Set(boosted.map(r => r.id));
+  const neighbors = findGraphNeighbors(db, topIds, existingIds, 2);
+
+  const finalResults: Array<{ entry: MemoryEntry; score: number; sources: string[] }> = boosted.map(r => ({
+    entry: r.entry,
+    score: r.composite,
+    sources: r.graphBoost > 0 ? [...r.sources, "graph"] : r.sources,
+  }));
+
+  // Add injected neighbors with a graph-only score
+  for (const neighbor of neighbors) {
+    const fact = db.prepare("SELECT * FROM facts WHERE id = ?").get(neighbor.factId) as Record<string, unknown>;
+    if (fact) {
+      finalResults.push({
+        entry: rowToEntry(fact),
+        score: neighbor.weight * 0.15, // Graph-only score
+        sources: [`graph:${neighbor.relation}`],
+      });
+    }
+  }
+
   finalResults.sort((a, b) => b.score - a.score);
   return finalResults.slice(0, limit);
 }

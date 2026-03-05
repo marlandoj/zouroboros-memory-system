@@ -65,9 +65,35 @@ CREATE TABLE IF NOT EXISTS ttl_defaults (
   ttl_seconds INTEGER  -- NULL means never expires
 );
 
-INSERT OR IGNORE INTO ttl_defaults VALUES 
+INSERT OR IGNORE INTO ttl_defaults VALUES
   ('permanent', NULL),
   ('stable', 7776000),      -- 90 days
   ('active', 1209600),      -- 14 days
   ('session', 86400),       -- 24 hours
   ('checkpoint', 14400);    -- 4 hours
+
+-- Associative links between facts (graph intelligence)
+CREATE TABLE IF NOT EXISTS fact_links (
+  source_id TEXT NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
+  target_id TEXT NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
+  relation TEXT NOT NULL DEFAULT 'related',
+  weight REAL DEFAULT 1.0,
+  created_at INTEGER DEFAULT (strftime('%s', 'now')),
+  PRIMARY KEY (source_id, target_id, relation)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fact_links_source ON fact_links(source_id);
+CREATE INDEX IF NOT EXISTS idx_fact_links_target ON fact_links(target_id);
+
+-- Auto-capture history log
+CREATE TABLE IF NOT EXISTS capture_log (
+  id TEXT PRIMARY KEY,
+  source TEXT NOT NULL,
+  transcript_hash TEXT NOT NULL,
+  facts_extracted INTEGER,
+  facts_skipped INTEGER,
+  contradictions INTEGER,
+  model TEXT,
+  duration_ms INTEGER,
+  created_at INTEGER DEFAULT (strftime('%s', 'now'))
+);
