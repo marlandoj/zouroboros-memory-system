@@ -1,113 +1,290 @@
-# Zo Memory System Skill v3.0.0
+# Zo Memory System
 
-Give your Zo Computer personas persistent memory with semantic understanding and an Ollama-powered memory gate for always-on context injection.
+> Give your Zo Computer personas persistent memory with semantic understanding, a knowledge graph, and automatic fact extraction. All local, no API costs.
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+---
+
+## What This Is
+
+This skill gives your AI personas long-term memory that persists across conversations:
+
+- **Hybrid Search** -- Combines keyword matching (BM25) with vector similarity so you find facts even when you phrase things differently
+- **Knowledge Graph** -- Link facts together with typed relationships, find connections between entities, and identify gaps in your knowledge base
+- **Auto-Capture** -- Feed a conversation transcript in, get structured facts out. No manual entry required
+- **Memory Gate** -- A local model that decides whether each message needs stored memory, filtering 40-60% of messages and saving tokens
+- **5-Tier Adaptive Decay** -- Facts automatically promote or demote based on how often they're accessed
+- **Swarm Integration** -- Token-optimized memory for multi-agent workflows via [zo-swarm-orchestrator](https://github.com/marlandoj/zo-swarm-orchestrator)
+- **Fully Local** -- Embeddings and query expansion run on Ollama (nomic-embed-text + qwen2.5:1.5b). No external API costs
+
+---
+
+## Quick Start
+
+There are two ways to use this skill: through the **Zo chat window** (natural language) or the **terminal** (CLI scripts).
+
+### Option 1: Natural Language via Zo Chat
+
+The fastest way. Open your Zo chat window and type:
+
+```
+Set up the memory system for my personas.
+Use the zo-memory-system skill.
+```
+
+Zo will install the database, pull the required Ollama models, and configure everything. You can then say things like:
+
+- *"Remember that our brand voice is concise, confident, and no fluff"*
+- *"What did we decide about the database for the FFB project?"*
+- *"Store this as a permanent preference: always use Bun over Node for new scripts"*
+- *"Search my memory for anything about supplier pricing"*
+- *"Show me how the FFB website is connected to our hosting decision"*
+- *"Run a knowledge gap analysis on my stored facts"*
+- *"Extract facts from today's conversation and store them"*
+
+Zo handles the CLI commands, search queries, and fact storage automatically.
+
+### Option 2: Terminal (CLI Scripts)
+
+#### Install and initialize
+
+```bash
+cd /home/workspace/Skills/zo-memory-system
+./scripts/install.sh
+bun scripts/memory.ts init
+```
+
+#### Store a fact
+
+```bash
+bun scripts/memory.ts store \
+  --entity "user" \
+  --key "brand-voice" \
+  --value "Concise, confident, no fluff" \
+  --decay permanent
+```
+
+#### Search your memory
+
+```bash
+# Semantic + keyword hybrid search (recommended)
+bun scripts/memory.ts hybrid "why did we choose SQLite"
+
+# Fast exact keyword search
+bun scripts/memory.ts search "router password"
+```
+
+#### Add memory support for a persona
+
+```bash
+bun scripts/add-persona.sh "ops-manager" "Operations leader"
+```
+
+---
 
 ## Prerequisites
+
+The memory system uses Ollama for local embeddings and query expansion. No API keys needed.
 
 ```bash
 # Install Ollama
 curl -fsSL https://ollama.com/install.sh | sh
 
 # Pull required models
-ollama pull nomic-embed-text   # Embeddings (768d)
-ollama pull qwen2.5:1.5b       # HyDE query expansion + memory gate
+ollama pull nomic-embed-text   # Embeddings (768 dimensions)
+ollama pull qwen2.5:1.5b       # Query expansion + memory gate
+ollama pull qwen2.5:7b         # Auto-capture fact extraction (optional)
 ```
 
-## Installation
+| Model | Purpose | Size | Required? |
+|-------|---------|------|-----------|
+| nomic-embed-text | Vector embeddings | 274 MB | Yes |
+| qwen2.5:1.5b | HyDE expansion + memory gate | 986 MB | Yes |
+| qwen2.5:7b | Auto-capture extraction | 4.4 GB | Optional |
+
+---
+
+## Key Features Explained
+
+### Hybrid Search
+
+The system runs two searches in parallel and combines the results:
+
+1. **BM25 full-text search** -- Finds exact keyword matches
+2. **Vector similarity search** -- Finds semantically similar facts using embeddings
+
+Results are fused using Reciprocal Rank Fusion (RRF). This means "what's the router password?" and "what was that network credential we set up?" both find the same fact.
+
+**HyDE query expansion** rewrites vague queries into hypothetical answers before searching. A query like "that thing about data safety" gets expanded, turning 1-result searches into 6-result searches. Adds about 3.5s of latency.
+
+### Knowledge Graph
+
+Facts can be linked with typed, weighted relationships:
 
 ```bash
-cd /home/workspace/Skills/zo-memory-system
-./scripts/install.sh
+# Link two facts
+bun scripts/graph.ts link --source <id1> --target <id2> --relation "depends_on"
+
+# Find the shortest path between two entities
+bun scripts/graph.ts find-connections --from "project.ffb-site" --to "decision.hosting"
+
+# Scan for orphaned facts, dead ends, and weak links
+bun scripts/graph.ts knowledge-gaps
 ```
 
-## Quick Start
+Or via Zo chat:
+
+```
+Link the FFB website fact to our hosting decision with a "depends_on" relationship.
+How is the FFB website connected to our infrastructure setup?
+Run a knowledge gap analysis.
+```
+
+### Auto-Capture
+
+Extract structured facts from conversation transcripts:
 
 ```bash
-# Initialize database
-bun .zo/memory/scripts/memory.ts init
+# Preview what would be extracted (dry run)
+bun scripts/auto-capture.ts --input conversation.md --dry-run
 
-# Add a persona
-bun .zo/memory/scripts/add-persona.sh "backend-architect" "System design"
-
-# Store a fact
-bun .zo/memory/scripts/memory.ts store \
-  --entity "user" \
-  --key "preference" \
-  --value "value" \
-  --decay permanent
-
-# Hybrid search (semantic + exact)
-bun .zo/memory/scripts/memory.ts hybrid "why did we choose SQLite"
-
-# Fast exact search (no vectors)
-bun .zo/memory/scripts/memory.ts search "router password" --no-hyde
+# Extract and store facts
+bun scripts/auto-capture.ts --input conversation.md --source "chat:2026-03-04"
 ```
 
-## Memory Gate (v2.3)
+Or via Zo chat:
 
-The memory gate classifies incoming messages and decides whether to inject stored memory context. This enables always-on memory without burning tokens on every message.
+```
+Extract facts from today's conversation and store them in memory.
+```
+
+Quality safeguards: confidence threshold (0.6), minimum value length (10 chars), max 20 facts per capture, deduplication, and contradiction detection with supersession links.
+
+### Memory Gate
+
+The memory gate classifies each incoming message: does it need stored memory?
 
 ```bash
-# Message that needs memory — returns results (exit 0)
-bun scripts/memory-gate.ts "what did we decide about FFB pricing?"
-
-# Greeting — skipped, no overhead (exit 2)
-bun scripts/memory-gate.ts "hello"
-
-# References stored work — returns results (exit 0)
-bun scripts/memory-gate.ts "update the supplier scorecard"
+bun scripts/memory-gate.ts "what did we decide about pricing?"  # Exit 0: results found
+bun scripts/memory-gate.ts "hello"                               # Exit 2: no memory needed
 ```
 
-**Exit codes:** 0 = results found, 1 = error, 2 = no memory needed, 3 = memory needed but no results
+**Exit codes:** 0 = results found, 1 = error, 2 = no memory needed, 3 = memory needed but nothing found
 
-**Swarm performance:** The gate filters 40-60% of messages, keeping memory token consumption at 2.5-6.9% of context budget vs 34-120% without gating. See the [blog post](https://marlandoj.zo.space/blog/local-memory-vs-supermemory) for the full analysis.
+In a real swarm with 11 tasks, the gate keeps memory token usage at 2.5-6.9% of the context budget vs. 34-120% without it.
+
+---
 
 ## Performance
 
 | Mode | Latency | Use Case |
 |------|---------|----------|
-| FTS + Vectors | ~0.5s | Specific queries |
-| With HyDE | ~4s | Vague/conceptual queries |
+| FTS + Vectors only | ~0.5s | Specific queries with exact keywords |
+| With HyDE expansion | ~4s | Vague or conceptual queries |
+| Graph-boosted search | +~5ms | Negligible overhead on top of any search |
+| Auto-capture | ~3-5s | Per-conversation extraction |
 | Memory gate (warm) | ~5-7s | Per-message classification |
-| Memory gate (cold) | ~35-58s | First call after model unload |
 
-## Documentation
+---
 
-- `SKILL.md` — Full documentation with architecture and configuration
-- `scripts/demo.ts` — Interactive demo
-- `assets/examples/` — Example persona memory files
+## Implementation Examples
 
-## Files
+### Example 1: Store brand preferences (Zo chat)
+
+```
+Remember these preferences for all my personas:
+- Brand voice: concise, confident, no fluff
+- Always use Bun over Node for new scripts
+- Default timezone: America/Phoenix
+```
+
+### Example 2: Research memory (terminal)
+
+```bash
+# Store a project decision
+bun scripts/memory.ts store \
+  --entity "decision.database" \
+  --key "choice" \
+  --value "Chose SQLite over Postgres for memory storage. Reason: zero config, embedded, fast for single-user." \
+  --decay stable
+
+# Later, find it with a vague query
+bun scripts/memory.ts hybrid "why did we pick the database"
+```
+
+### Example 3: Knowledge graph exploration (Zo chat)
+
+```
+How is my FFB website project connected to the hosting decisions we made?
+Show me all facts about the FFB project.
+What knowledge gaps exist in my stored facts?
+```
+
+### Example 4: Auto-capture after a swarm run
+
+```
+Extract facts from the swarm output at /home/workspace/Reports/ffb-review.md
+and store them in memory under the "ffb-project" persona.
+```
+
+---
+
+## Repository Structure
 
 ```
 zo-memory-system/
-├── SKILL.md              # Main documentation (v2.3)
-├── README.md             # This file
+├── SKILL.md                  # Full documentation (v3.0)
+├── README.md                 # This file
 ├── scripts/
-│   ├── memory.ts         # Main CLI (parallelized v2.1)
-│   ├── memory-gate.ts    # Ollama-powered relevance gate (v2.3)
-│   ├── add-persona.sh    # Persona setup helper
-│   ├── install.sh        # Install to workspace
-│   ├── schema.sql        # Database schema
-│   ├── demo.ts           # Demo script
-│   └── package.json      # Dependencies
+│   ├── memory.ts             # Main CLI (hybrid search, store, stats)
+│   ├── memory-gate.ts        # Ollama-powered relevance gate
+│   ├── graph.ts              # Knowledge graph CLI (link, find-connections, gaps)
+│   ├── graph-boost.ts        # Graph scoring module
+│   ├── auto-capture.ts       # Conversation-to-fact extraction
+│   ├── add-persona.sh        # Persona setup helper
+│   ├── install.sh            # Install to workspace
+│   ├── schema.sql            # Database schema
+│   └── package.json          # Dependencies
 └── assets/
-    └── examples/         # Example persona memory files
+    └── examples/             # Example persona memory files
 ```
+
+---
 
 ## Configuration
 
+Environment variables (all optional, sensible defaults):
+
 ```bash
-# Environment variables (optional)
 export OLLAMA_URL="http://localhost:11434"
 export ZO_EMBEDDING_MODEL="nomic-embed-text"
 export ZO_HYDE_MODEL="qwen2.5:1.5b"
-export ZO_GATE_MODEL="qwen2.5:1.5b"    # Memory gate model
+export ZO_GATE_MODEL="qwen2.5:1.5b"
+export ZO_CAPTURE_MODEL="qwen2.5:7b"
+export ZO_MEMORY_DB="/path/to/shared-facts.db"
 ```
 
-## Updating
+---
 
-```bash
-cd /home/workspace/Skills/zo-memory-system
-./scripts/install.sh
-```
+## Related Skills
+
+- [zo-persona-creator](https://github.com/marlandoj/zo-persona-creator) -- Create personas that use this memory system
+- [zo-swarm-orchestrator](https://github.com/marlandoj/zo-swarm-orchestrator) -- Multi-agent coordination with token-optimized memory
+- [zo-swarm-executors](https://github.com/marlandoj/zo-swarm-executors) -- Local executor bridges that share memory
+
+---
+
+## Contributing
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/my-improvement`)
+3. Commit your changes
+4. Push to the branch (`git push origin feature/my-improvement`)
+5. Open a Pull Request
+
+---
+
+## License
+
+MIT License -- Use freely, commercially or personally.
