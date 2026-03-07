@@ -1,19 +1,26 @@
 #!/usr/bin/env bun
 /**
- * zo-memory-system v2 — Hybrid SQLite + Vector Search
+ * zo-memory-system v3 — Hybrid SQLite + Vector Search + Episodic Memory
  * 
- * Enhancements from QMD research:
+ * v2 enhancements (QMD research):
  * - Vector embeddings (nomic-embed-text via Ollama)
  * - HyDE query expansion (optional)
  * - RRF fusion (BM25 + vectors)
  * - Composite scoring with decay awareness
  * 
- * Backward compatible with v1 facts DB.
+ * v3 enhancements (Mengram-inspired):
+ * - Episodic memory (event-based "what happened" with outcomes)
+ * - Temporal queries (since/until filtering)
+ * - Procedure memory (workflow patterns with evolution) [Phase 2]
+ * - DB migration system
+ * 
+ * Backward compatible with v1/v2 facts DB.
  */
 
 import { Database } from "bun:sqlite";
 import { randomUUID, createHash } from "crypto";
 import { join } from "path";
+import { readFileSync } from "fs";
 import { computeGraphBoost, findGraphNeighbors } from "./graph-boost";
 
 // --- Configuration ---
@@ -53,6 +60,47 @@ interface MemoryEntry {
   metadata?: Record<string, unknown>;
 }
 
+type Outcome = "success" | "failure" | "resolved" | "ongoing";
+
+interface Episode {
+  id: string;
+  summary: string;
+  outcome: Outcome;
+  happenedAt: number;
+  durationMs?: number;
+  procedureId?: string;
+  entities: string[];
+  metadata?: Record<string, unknown>;
+  createdAt?: number;
+}
+
+interface TemporalQuery {
+  since?: string;
+  until?: string;
+  entity?: string;
+  outcome?: Outcome;
+  limit?: number;
+}
+
+interface ProcedureStep {
+  executor: string;
+  taskPattern: string;
+  timeoutSeconds: number;
+  fallbackExecutor?: string;
+  notes?: string;
+}
+
+interface Procedure {
+  id: string;
+  name: string;
+  version: number;
+  steps: ProcedureStep[];
+  successCount: number;
+  failureCount: number;
+  evolvedFrom?: string;
+  createdAt?: number;
+}
+
 // --- Database Setup ---
 let db: Database;
 let dbInitialized = false;
@@ -78,6 +126,34 @@ async function initDb(): Promise<Database> {
   
   dbInitialized = true;
   return db;
+}
+
+// --- Database Migration ---
+async function runMigration(): Promise<void> {
+  const db = await initDb();
+  const sqlPath = join(import.meta.dir, "migrate-v2.sql");
+  
+  try {
+    const sql = readFileSync(sqlPath, "utf-8");
+    db.exec(sql);
+    
+    // Verify tables exist
+    const tables = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('episodes','episode_entities','procedures','procedure_episodes') ORDER BY name"
+    ).all() as Array<{ name: string }>;
+    
+    console.log("Migration complete.");
+    console.log(`  Tables created/verified: ${tables.map(t => t.name).join(", ")}`);
+    
+    // Show existing data is intact
+    const factCount = db.prepare("SELECT COUNT(*) as cnt FROM facts").get() as { cnt: number };
+    const embCount = db.prepare("SELECT COUNT(*) as cnt FROM fact_embeddings").get() as { cnt: number };
+    console.log(`  Existing facts: ${factCount.cnt}`);
+    console.log(`  Existing embeddings: ${embCount.cnt}`);
+  } catch (err) {
+    console.error(`Migration failed: ${err}`);
+    process.exit(1);
+  }
 }
 
 // --- Embedding Service ---
@@ -495,6 +571,342 @@ async function backfillEmbeddings(batchSize: number = 50): Promise<{ processed: 
   return { processed, failed };
 }
 
+// --- Episode Storage ---
+async function createEpisode(episode: Omit<Episode, "id" | "createdAt">): Promise<Episode> {
+  const db = await initDb();
+  const id = randomUUID();
+  const nowSec = Math.floor(Date.now() / 1000);
+  
+  db.prepare(`
+    INSERT INTO episodes (id, summary, outcome, happened_at, duration_ms, procedure_id, metadata, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id,
+    episode.summary,
+    episode.outcome,
+    episode.happenedAt,
+    episode.durationMs || null,
+    episode.procedureId || null,
+    episode.metadata ? JSON.stringify(episode.metadata) : null,
+    nowSec
+  );
+  
+  // Insert entity links
+  const insertEntity = db.prepare(
+    "INSERT OR IGNORE INTO episode_entities (episode_id, entity) VALUES (?, ?)"
+  );
+  for (const entity of episode.entities) {
+    insertEntity.run(id, entity);
+  }
+  
+  return { ...episode, id, createdAt: nowSec };
+}
+
+// --- Temporal Query Helpers ---
+function parseRelativeTime(input: string): number {
+  const now = Math.floor(Date.now() / 1000);
+  
+  // Try ISO date first (YYYY-MM-DD)
+  const isoMatch = input.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoMatch) {
+    return Math.floor(new Date(input).getTime() / 1000);
+  }
+  
+  // Relative: "N days/hours/weeks/months ago"
+  const relMatch = input.match(/^(\d+)\s+(second|minute|hour|day|week|month)s?\s+ago$/i);
+  if (relMatch) {
+    const n = parseInt(relMatch[1]);
+    const unit = relMatch[2].toLowerCase();
+    const multipliers: Record<string, number> = {
+      second: 1,
+      minute: 60,
+      hour: 3600,
+      day: 86400,
+      week: 604800,
+      month: 2592000,
+    };
+    return now - (n * (multipliers[unit] || 86400));
+  }
+  
+  // Named: "last week", "last month", "today", "yesterday"
+  const named: Record<string, number> = {
+    "today": now - 86400,
+    "yesterday": now - 172800,
+    "last week": now - 604800,
+    "last month": now - 2592000,
+    "last year": now - 31536000,
+  };
+  if (named[input.toLowerCase()]) {
+    return named[input.toLowerCase()];
+  }
+  
+  // Fallback: try parsing as timestamp
+  const ts = parseInt(input);
+  if (!isNaN(ts)) return ts;
+  
+  console.warn(`Could not parse time: "${input}", defaulting to 7 days ago`);
+  return now - 604800;
+}
+
+async function findEpisodes(query: TemporalQuery): Promise<Episode[]> {
+  const db = await initDb();
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  
+  if (query.since) {
+    conditions.push("e.happened_at >= ?");
+    params.push(parseRelativeTime(query.since));
+  }
+  if (query.until) {
+    conditions.push("e.happened_at <= ?");
+    params.push(parseRelativeTime(query.until));
+  }
+  if (query.outcome) {
+    conditions.push("e.outcome = ?");
+    params.push(query.outcome);
+  }
+  if (query.entity) {
+    conditions.push("e.id IN (SELECT episode_id FROM episode_entities WHERE entity = ?)");
+    params.push(query.entity);
+  }
+  
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  const limit = query.limit || 20;
+  
+  const rows = db.prepare(`
+    SELECT e.* FROM episodes e
+    ${where}
+    ORDER BY e.happened_at DESC
+    LIMIT ?
+  `).all(...params, limit) as Array<Record<string, unknown>>;
+  
+  return rows.map(row => {
+    const entities = db.prepare(
+      "SELECT entity FROM episode_entities WHERE episode_id = ?"
+    ).all(row.id as string) as Array<{ entity: string }>;
+    
+    return {
+      id: row.id as string,
+      summary: row.summary as string,
+      outcome: row.outcome as Outcome,
+      happenedAt: row.happened_at as number,
+      durationMs: row.duration_ms as number | undefined,
+      procedureId: row.procedure_id as string | undefined,
+      entities: entities.map(e => e.entity),
+      metadata: row.metadata ? JSON.parse(row.metadata as string) : undefined,
+      createdAt: row.created_at as number,
+    };
+  });
+}
+
+async function calculateVelocity(
+  entity: string,
+  granularity: "day" | "week" | "month" = "week",
+  since?: string
+): Promise<Array<{ period: string; total: number; successes: number; failures: number }>> {
+  const db = await initDb();
+  const sinceTs = since ? parseRelativeTime(since) : parseRelativeTime("90 days ago");
+  
+  const formatStr: Record<string, string> = {
+    day: "%Y-%m-%d",
+    week: "%Y-W%W",
+    month: "%Y-%m",
+  };
+  
+  const rows = db.prepare(`
+    SELECT 
+      strftime('${formatStr[granularity]}', e.happened_at, 'unixepoch') as period,
+      COUNT(*) as total,
+      SUM(CASE WHEN e.outcome = 'success' THEN 1 ELSE 0 END) as successes,
+      SUM(CASE WHEN e.outcome = 'failure' THEN 1 ELSE 0 END) as failures
+    FROM episodes e
+    JOIN episode_entities ee ON e.id = ee.episode_id
+    WHERE ee.entity = ? AND e.happened_at >= ?
+    GROUP BY period
+    ORDER BY period
+  `).all(entity, sinceTs) as Array<{ period: string; total: number; successes: number; failures: number }>;
+  
+  return rows;
+}
+
+// --- Procedural Memory ---
+async function createProcedure(procedure: Omit<Procedure, "id" | "createdAt" | "successCount" | "failureCount">): Promise<Procedure> {
+  const db = await initDb();
+  const id = randomUUID();
+  const nowSec = Math.floor(Date.now() / 1000);
+
+  db.prepare(`
+    INSERT INTO procedures (id, name, version, steps, success_count, failure_count, evolved_from, created_at)
+    VALUES (?, ?, ?, ?, 0, 0, ?, ?)
+  `).run(
+    id,
+    procedure.name,
+    procedure.version,
+    JSON.stringify(procedure.steps),
+    procedure.evolvedFrom || null,
+    nowSec
+  );
+
+  return { ...procedure, id, successCount: 0, failureCount: 0, createdAt: nowSec };
+}
+
+async function getProcedure(name: string, version?: number): Promise<Procedure | null> {
+  const db = await initDb();
+
+  const row = version
+    ? db.prepare("SELECT * FROM procedures WHERE name = ? AND version = ?").get(name, version) as Record<string, unknown> | null
+    : db.prepare("SELECT * FROM procedures WHERE name = ? ORDER BY version DESC LIMIT 1").get(name) as Record<string, unknown> | null;
+
+  if (!row) return null;
+  return rowToProcedure(row);
+}
+
+async function listProcedures(): Promise<Procedure[]> {
+  const db = await initDb();
+  const rows = db.prepare(
+    "SELECT * FROM procedures ORDER BY name, version DESC"
+  ).all() as Array<Record<string, unknown>>;
+  return rows.map(rowToProcedure);
+}
+
+function rowToProcedure(row: Record<string, unknown>): Procedure {
+  return {
+    id: row.id as string,
+    name: row.name as string,
+    version: row.version as number,
+    steps: JSON.parse(row.steps as string) as ProcedureStep[],
+    successCount: row.success_count as number,
+    failureCount: row.failure_count as number,
+    evolvedFrom: row.evolved_from as string | undefined,
+    createdAt: row.created_at as number,
+  };
+}
+
+async function recordProcedureFeedback(
+  procedureId: string,
+  success: boolean,
+  details?: { episodeId?: string; error?: string }
+): Promise<void> {
+  const db = await initDb();
+
+  if (success) {
+    db.prepare("UPDATE procedures SET success_count = success_count + 1 WHERE id = ?").run(procedureId);
+  } else {
+    db.prepare("UPDATE procedures SET failure_count = failure_count + 1 WHERE id = ?").run(procedureId);
+  }
+
+  // Link to episode if provided
+  if (details?.episodeId) {
+    db.prepare(
+      "INSERT OR IGNORE INTO procedure_episodes (procedure_id, episode_id) VALUES (?, ?)"
+    ).run(procedureId, details.episodeId);
+  }
+}
+
+async function evolveProcedure(procedureName: string): Promise<Procedure | null> {
+  const db = await initDb();
+  const current = await getProcedure(procedureName);
+  if (!current) {
+    console.error(`Procedure not found: ${procedureName}`);
+    return null;
+  }
+
+  // Get failure episodes linked to this procedure
+  const failureEpisodes = db.prepare(`
+    SELECT e.* FROM episodes e
+    JOIN procedure_episodes pe ON e.id = pe.episode_id
+    WHERE pe.procedure_id = ? AND e.outcome = 'failure'
+    ORDER BY e.happened_at DESC
+    LIMIT 5
+  `).all(current.id) as Array<Record<string, unknown>>;
+
+  // Also check general failure episodes with overlapping entities
+  const stepExecutors = current.steps.map(s => s.executor);
+  const generalFailures = db.prepare(`
+    SELECT DISTINCT e.* FROM episodes e
+    JOIN episode_entities ee ON e.id = ee.episode_id
+    WHERE e.outcome = 'failure'
+      AND ee.entity IN (${stepExecutors.map(() => "?").join(",")})
+      AND e.happened_at > ?
+    ORDER BY e.happened_at DESC
+    LIMIT 5
+  `).all(...stepExecutors, Math.floor(Date.now() / 1000) - 30 * 86400) as Array<Record<string, unknown>>;
+
+  const allFailures = [...failureEpisodes, ...generalFailures];
+
+  if (allFailures.length === 0) {
+    console.log("No failure data to evolve from. Procedure is performing well.");
+    return current;
+  }
+
+  console.log(`Evolving "${procedureName}" v${current.version} using ${allFailures.length} failure episodes...`);
+
+  // Use Ollama to suggest improvements
+  const failureSummaries = allFailures.map(f => (f.summary as string)).join("\n- ");
+  const currentStepsJson = JSON.stringify(current.steps, null, 2);
+
+  try {
+    const resp = await fetch(`${OLLAMA_URL}/api/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: process.env.ZO_EVOLUTION_MODEL || "qwen2.5:7b",
+        prompt: `You are optimizing a multi-step workflow procedure. Given the current steps and recent failures, suggest an improved version.
+
+Current procedure "${procedureName}" v${current.version}:
+${currentStepsJson}
+
+Recent failures:
+- ${failureSummaries}
+
+Success rate: ${current.successCount}/${current.successCount + current.failureCount}
+
+Output ONLY a valid JSON array of improved steps. Each step has: executor (string), taskPattern (string), timeoutSeconds (number), fallbackExecutor (string, optional), notes (string, optional).
+Keep the same general structure but adjust executors, timeouts, or add fallbacks based on failure patterns.`,
+        stream: false,
+        options: { temperature: 0.3, num_predict: 1500 },
+        keep_alive: "24h",
+      }),
+      signal: AbortSignal.timeout(60000),
+    });
+
+    if (!resp.ok) throw new Error(`Ollama returned ${resp.status}`);
+
+    const data = await resp.json();
+    const text = data.response?.trim() || "";
+
+    // Parse JSON from response
+    const jsonMatch = text.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) throw new Error("No JSON array found in response");
+
+    const newSteps = JSON.parse(jsonMatch[0]) as ProcedureStep[];
+    if (!Array.isArray(newSteps) || newSteps.length === 0) throw new Error("Empty steps array");
+
+    // Validate steps
+    const validSteps = newSteps.map(s => ({
+      executor: String(s.executor || "claude-code"),
+      taskPattern: String(s.taskPattern || ""),
+      timeoutSeconds: Number(s.timeoutSeconds) || 300,
+      fallbackExecutor: s.fallbackExecutor ? String(s.fallbackExecutor) : undefined,
+      notes: s.notes ? String(s.notes) : undefined,
+    }));
+
+    // Create evolved procedure
+    const evolved = await createProcedure({
+      name: procedureName,
+      version: current.version + 1,
+      steps: validSteps,
+      evolvedFrom: current.id,
+    });
+
+    console.log(`Evolved to v${evolved.version} with ${evolved.steps.length} steps`);
+    return evolved;
+  } catch (err) {
+    console.error(`Evolution failed: ${err}`);
+    return null;
+  }
+}
+
 // --- Stats ---
 async function stats(): Promise<void> {
   const db = await initDb();
@@ -506,21 +918,47 @@ async function stats(): Promise<void> {
   `).get() as { cnt: number };
   const embeddingCount = db.prepare(`SELECT COUNT(*) as cnt FROM fact_embeddings`).get() as { cnt: number };
   
-  console.log("Memory Statistics (v2):");
+  console.log("Memory Statistics (v3):");
   console.log(`  Total facts: ${total.cnt}`);
   console.log(`  Facts with embeddings: ${withEmbeddings.cnt}`);
   console.log(`  Vector cache entries: ${embeddingCount.cnt}`);
   console.log(`  Embedding model: ${EMBEDDING_MODEL}`);
   console.log(`  Ollama URL: ${OLLAMA_URL}`);
+  
+  // Check for v3 tables (episodes, procedures)
+  const hasEpisodes = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='episodes'"
+  ).get();
+  
+  if (hasEpisodes) {
+    const episodeCount = db.prepare("SELECT COUNT(*) as cnt FROM episodes").get() as { cnt: number };
+    const recentEpisodes = db.prepare(
+      "SELECT COUNT(*) as cnt FROM episodes WHERE happened_at > ?"
+    ).get(Math.floor(Date.now() / 1000) - 604800) as { cnt: number };
+    console.log(`  Episodes: ${episodeCount.cnt} (${recentEpisodes.cnt} in last 7 days)`);
+  }
+  
+  const hasProcedures = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='procedures'"
+  ).get();
+  
+  if (hasProcedures) {
+    const procCount = db.prepare("SELECT COUNT(*) as cnt FROM procedures").get() as { cnt: number };
+    console.log(`  Procedures: ${procCount.cnt}`);
+  }
+  
+  if (!hasEpisodes && !hasProcedures) {
+    console.log("  (Run 'bun memory.ts migrate' to enable episodic + procedural memory)");
+  }
 }
 
 // --- CLI Interface ---
 function printUsage() {
   console.log(`
-zo-memory-system v2 — Hybrid SQLite + Vector Search
+zo-memory-system v3 — Hybrid SQLite + Vector Search + Episodic Memory
 
 Usage:
-  bun memory-next.ts <command> [options]
+  bun memory.ts <command> [options]
 
 Commands:
   store     Store a new fact with embedding
@@ -528,6 +966,9 @@ Commands:
   hybrid    Hybrid search (FTS + vectors + HyDE)
   index     Backfill embeddings for existing facts
   stats     Show memory statistics
+  migrate   Run database migration (adds episodes + procedures tables)
+  episodes  List/query episodic memory
+  trends    Show velocity trends for an entity
 
 Store options:
   --entity <name>      Entity name (required)
@@ -542,12 +983,51 @@ Search options:
   --limit <n>          Max results (default: 5/6)
   --no-hyde            Disable HyDE expansion
 
+Episodes options:
+  --entity <name>      Filter by entity
+  --outcome <type>     Filter: success|failure|resolved|ongoing
+  --since <time>       Since: "7 days ago", "2026-03-01", "last week"
+  --until <time>       Until: same formats as --since
+  --limit <n>          Max results (default: 20)
+
+Trends options:
+  --entity <name>      Entity to track (required)
+  --granularity <g>    day|week|month (default: week)
+  --since <time>       Since when (default: 90 days ago)
+
+Procedures options:
+  --list               List all procedures
+  --show <name>        Show steps for a procedure (latest version)
+  --evolve <name>      Force evolution based on failure data
+  --feedback <id>      Record feedback (use with --success or --failure)
+  --success            Mark feedback as success
+  --failure            Mark feedback as failure
+
+Other commands:
+  mcp                  Start MCP server (stdio transport)
+  profile              Show executor cognitive profile
+  import               Import facts from external sources
+
+Profile options:
+  --executor <id>      Executor ID (e.g., claude-code, gemini)
+
+Import options:
+  --source <type>      Source type: chatgpt|obsidian|markdown
+  --path <file>        Path to source file or directory
+  --dry-run            Preview without storing
+
 Examples:
-  bun memory-next.ts store --entity "user" --key "name" --value "Alice"
-  bun memory-next.ts hybrid "router password"
-  bun memory-next.ts hybrid "project deadline" --no-hyde
-  bun memory-next.ts index
-  bun memory-next.ts stats
+  bun memory.ts store --entity "user" --key "name" --value "Alice"
+  bun memory.ts hybrid "router password"
+  bun memory.ts migrate
+  bun memory.ts episodes --entity "swarm.ffb" --since "7 days ago"
+  bun memory.ts episodes --outcome failure
+  bun memory.ts trends --entity "project.ffb-site" --granularity week
+  bun memory.ts stats
+  bun memory.ts procedures --list
+  bun memory.ts procedures --show "site-optimization"
+  bun memory.ts procedures --evolve "site-optimization"
+  bun memory.ts procedures --feedback <id> --success
 `);
 }
 
@@ -651,11 +1131,192 @@ async function main() {
       break;
     }
     
+    case "migrate": {
+      await runMigration();
+      break;
+    }
+    
+    case "episodes": {
+      const episodes = await findEpisodes({
+        entity: flags.entity,
+        outcome: flags.outcome as Outcome | undefined,
+        since: flags.since,
+        until: flags.until,
+        limit: parseInt(flags.limit) || 20,
+      });
+      
+      if (episodes.length === 0) {
+        console.log("No episodes found.");
+        break;
+      }
+      
+      console.log(`Found ${episodes.length} episodes:\n`);
+      for (const ep of episodes) {
+        const date = new Date(ep.happenedAt * 1000).toISOString().slice(0, 16).replace("T", " ");
+        const duration = ep.durationMs ? ` (${(ep.durationMs / 1000).toFixed(1)}s)` : "";
+        const outcomeIcon = { success: "✓", failure: "✗", resolved: "~", ongoing: "…" }[ep.outcome];
+        console.log(`${outcomeIcon} [${ep.outcome}] ${date}${duration}`);
+        console.log(`  ${ep.summary}`);
+        if (ep.entities.length > 0) {
+          console.log(`  entities: ${ep.entities.join(", ")}`);
+        }
+        console.log();
+      }
+      break;
+    }
+    
+    case "trends": {
+      if (!flags.entity) {
+        console.error("Error: --entity is required for trends");
+        process.exit(1);
+      }
+      const granularity = (flags.granularity || "week") as "day" | "week" | "month";
+      const velocity = await calculateVelocity(flags.entity, granularity, flags.since);
+      
+      if (velocity.length === 0) {
+        console.log(`No episodes found for entity "${flags.entity}".`);
+        break;
+      }
+      
+      console.log(`Velocity trends for "${flags.entity}" (by ${granularity}):\n`);
+      console.log("  Period        Total  OK  Fail  Rate");
+      console.log("  ─────────────────────────────────────");
+      for (const v of velocity) {
+        const rate = v.total > 0 ? ((v.successes / v.total) * 100).toFixed(0) : "–";
+        console.log(`  ${v.period.padEnd(12)}  ${String(v.total).padStart(5)}  ${String(v.successes).padStart(2)}  ${String(v.failures).padStart(4)}  ${rate}%`);
+      }
+      break;
+    }
+    
     case "stats": {
       await stats();
       break;
     }
     
+    case "procedures": {
+      if (flags.list !== undefined || (!flags.show && !flags.evolve && !flags.feedback)) {
+        const procs = await listProcedures();
+        if (procs.length === 0) {
+          console.log("No procedures found.");
+          break;
+        }
+        console.log(`Found ${procs.length} procedures:\n`);
+        const seen = new Set<string>();
+        for (const p of procs) {
+          if (seen.has(p.name)) continue;
+          seen.add(p.name);
+          const rate = (p.successCount + p.failureCount) > 0
+            ? ((p.successCount / (p.successCount + p.failureCount)) * 100).toFixed(0)
+            : "–";
+          console.log(`  ${p.name} v${p.version}  (${p.successCount}/${p.successCount + p.failureCount} = ${rate}% success)  ${p.steps.length} steps`);
+          if (p.evolvedFrom) console.log(`    evolved from: ${p.evolvedFrom}`);
+        }
+      } else if (flags.show) {
+        const proc = await getProcedure(flags.show);
+        if (!proc) {
+          console.log(`Procedure not found: ${flags.show}`);
+          break;
+        }
+        console.log(`Procedure: ${proc.name} v${proc.version}`);
+        console.log(`Success rate: ${proc.successCount}/${proc.successCount + proc.failureCount}`);
+        if (proc.evolvedFrom) console.log(`Evolved from: ${proc.evolvedFrom}`);
+        console.log(`\nSteps:`);
+        for (let i = 0; i < proc.steps.length; i++) {
+          const s = proc.steps[i];
+          console.log(`  ${i + 1}. [${s.executor}] ${s.taskPattern} (${s.timeoutSeconds}s)`);
+          if (s.fallbackExecutor) console.log(`     fallback: ${s.fallbackExecutor}`);
+          if (s.notes) console.log(`     note: ${s.notes}`);
+        }
+      } else if (flags.evolve) {
+        await evolveProcedure(flags.evolve);
+      } else if (flags.feedback) {
+        const success = flags.success !== undefined;
+        const failure = flags.failure !== undefined;
+        if (!success && !failure) {
+          console.error("Error: --feedback requires --success or --failure");
+          process.exit(1);
+        }
+        await recordProcedureFeedback(flags.feedback, success);
+        console.log(`Recorded ${success ? "success" : "failure"} for procedure ${flags.feedback}`);
+      }
+      break;
+    }
+    
+    case "mcp": {
+      console.log("Starting MCP server...");
+      const { execSync } = require("child_process");
+      const mcpPath = join(import.meta.dir, "mcp-server.ts");
+      execSync(`bun ${mcpPath}`, { stdio: "inherit" });
+      break;
+    }
+
+    case "profile": {
+      if (!flags.executor) {
+        console.error("Error: --executor is required for profile");
+        process.exit(1);
+      }
+      const histPath = join(process.env.HOME || "/tmp", ".swarm", "executor-history.json");
+      if (!require("fs").existsSync(histPath)) {
+        console.log("No executor history found.");
+        break;
+      }
+      const history = JSON.parse(readFileSync(histPath, "utf-8"));
+      const prefix = `${flags.executor}:`;
+      const entries = Object.entries(history).filter(([k]) => k.startsWith(prefix));
+
+      if (entries.length === 0) {
+        console.log(`No history found for executor: ${flags.executor}`);
+        break;
+      }
+
+      console.log(`Cognitive profile for ${flags.executor}:\n`);
+      for (const [key, entry] of entries as [string, any][]) {
+        const category = key.split(":")[1] || "unknown";
+        const rate = entry.attempts > 0
+          ? ((entry.successes / entry.attempts) * 100).toFixed(0)
+          : "–";
+        console.log(`  ${category}: ${entry.successes}/${entry.attempts} = ${rate}% success, avg ${(entry.avgDurationMs / 1000).toFixed(1)}s`);
+        if (entry.recent_episode_ids?.length) {
+          console.log(`    recent episodes: ${entry.recent_episode_ids.slice(0, 5).join(", ")}`);
+        }
+        if (entry.failure_patterns?.length) {
+          console.log(`    failure patterns: ${entry.failure_patterns.join(", ")}`);
+        }
+        if (entry.entity_affinities && Object.keys(entry.entity_affinities).length > 0) {
+          const affinities = Object.entries(entry.entity_affinities)
+            .sort((a: any, b: any) => b[1] - a[1])
+            .slice(0, 5)
+            .map(([e, s]: [string, any]) => `${e}=${(s as number).toFixed(2)}`)
+            .join(", ");
+          console.log(`    entity affinities: ${affinities}`);
+        }
+        console.log();
+      }
+      break;
+    }
+
+    case "import": {
+      const source = flags.source;
+      const path = flags.path;
+      const dryRun = flags["dry-run"] !== undefined;
+
+      if (!source || !path) {
+        console.error("Error: --source and --path are required for import");
+        console.error("  Sources: chatgpt, obsidian, markdown");
+        process.exit(1);
+      }
+
+      const importPath = join(import.meta.dir, "import.ts");
+      const { execSync } = require("child_process");
+      try {
+        execSync(`bun ${importPath} --source ${source} --path "${path}" ${dryRun ? "--dry-run" : ""}`, { stdio: "inherit" });
+      } catch (e) {
+        console.error(`Import failed: ${e}`);
+        process.exit(1);
+      }
+      break;
+    }
+
     default:
       console.error(`Unknown command: ${command}`);
       printUsage();

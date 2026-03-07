@@ -2,6 +2,7 @@
 
 > Give your Zo Computer personas persistent memory with semantic understanding, a knowledge graph, and automatic fact extraction. All local, no API costs.
 
+[![Version](https://img.shields.io/badge/version-3.2.0-blue?style=flat-square)](https://github.com/marlandoj/zo-memory-system)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ---
@@ -13,9 +14,13 @@ This skill gives your AI personas long-term memory that persists across conversa
 - **Hybrid Search** -- Combines keyword matching (BM25) with vector similarity so you find facts even when you phrase things differently
 - **Knowledge Graph** -- Link facts together with typed relationships, find connections between entities, and identify gaps in your knowledge base
 - **Auto-Capture** -- Feed a conversation transcript in, get structured facts out. No manual entry required
+- **Episodic Memory** -- Record "what happened" as events with outcomes, entity tagging, and temporal queries ("since last week", "failures in March")
+- **Procedural Memory** -- Versioned workflow patterns that track success/failure rates and self-evolve using Ollama when failures accumulate
+- **MCP Server** -- Expose memory as MCP tools (search, store, episodes, procedures, cognitive profiles) for Claude Desktop, Cursor, and other MCP clients
+- **Import Pipeline** -- Import facts from ChatGPT exports, Obsidian vaults, and markdown files with dedup and auto-embedding
 - **Memory Gate** -- A local model that decides whether each message needs stored memory, filtering 40-60% of messages and saving tokens
 - **5-Tier Adaptive Decay** -- Facts automatically promote or demote based on how often they're accessed
-- **Swarm Integration** -- Token-optimized memory for multi-agent workflows via [zo-swarm-orchestrator](https://github.com/marlandoj/zo-swarm-orchestrator)
+- **Swarm Integration** -- Token-optimized memory for multi-agent workflows via [zo-swarm-orchestrator](https://github.com/marlandoj/zo-swarm-orchestrator), with 6-signal composite routing, auto-episode creation, and cognitive profiles
 - **Fully Local** -- Embeddings and query expansion run on Ollama (nomic-embed-text + qwen2.5:1.5b). No external API costs
 
 ---
@@ -174,6 +179,98 @@ bun scripts/memory-gate.ts "hello"                               # Exit 2: no me
 
 In a real swarm with 11 tasks, the gate keeps memory token usage at 2.5-6.9% of the context budget vs. 34-120% without it.
 
+### Episodic Memory
+
+Record events with outcomes and query them by time, entity, or result:
+
+```bash
+# List recent episodes
+bun scripts/memory.ts episodes --since "7 days ago"
+
+# Filter by outcome
+bun scripts/memory.ts episodes --outcome failure --since "30 days ago"
+
+# Filter by entity
+bun scripts/memory.ts episodes --entity "executor.claude-code" --since "7 days ago"
+
+# Track success/failure trends over time
+bun scripts/memory.ts trends --entity "executor.claude-code" --granularity week
+```
+
+Or via Zo chat:
+
+```
+What swarm failures happened this week?
+Show me the success rate trend for Claude Code over the last month.
+```
+
+Accepts relative times ("7 days ago", "last week"), ISO dates, and Unix timestamps.
+
+### Procedural Memory
+
+Capture reusable workflow patterns as versioned step sequences:
+
+```bash
+# List all procedures
+bun scripts/memory.ts procedures --list
+
+# Show steps for a specific procedure
+bun scripts/memory.ts procedures --show "site-review"
+
+# Record success/failure feedback
+bun scripts/memory.ts procedures --feedback <id> --success
+bun scripts/memory.ts procedures --feedback <id> --failure
+
+# Evolve a procedure using Ollama (analyzes failure episodes, suggests improvements)
+bun scripts/memory.ts procedures --evolve "site-review"
+```
+
+When a procedure accumulates failures, `--evolve` uses Ollama to analyze linked failure episodes and create a new version with adjusted steps, timeouts, or fallback executors.
+
+### MCP Server
+
+Expose the memory system as MCP tools for external clients:
+
+```bash
+bun scripts/mcp-server.ts          # Start directly
+bun scripts/memory.ts mcp          # Start via CLI
+```
+
+**Available tools:** `memory_search`, `memory_store`, `memory_episodes`, `memory_procedures`, `cognitive_profile`
+
+Add to Claude Desktop or `.claude.json`:
+
+```json
+{
+  "mcpServers": {
+    "zo-memory": {
+      "command": "bun",
+      "args": ["/home/workspace/Skills/zo-memory-system/scripts/mcp-server.ts"]
+    }
+  }
+}
+```
+
+### Import Pipeline
+
+Import facts from external sources:
+
+```bash
+# Preview (no changes)
+bun scripts/memory.ts import --source markdown --path ~/notes/decisions.md --dry-run
+
+# Import ChatGPT export
+bun scripts/memory.ts import --source chatgpt --path ~/chatgpt-export.json
+
+# Import Obsidian vault
+bun scripts/memory.ts import --source obsidian --path ~/Vault
+
+# Import single markdown file
+bun scripts/memory.ts import --source markdown --path ~/notes/architecture.md
+```
+
+Supported sources: ChatGPT JSON exports, Obsidian markdown vaults (with frontmatter), and standalone markdown files. All imports include dedup detection and auto-generated embeddings.
+
 ---
 
 ## Performance
@@ -185,6 +282,8 @@ In a real swarm with 11 tasks, the gate keeps memory token usage at 2.5-6.9% of 
 | Graph-boosted search | +~5ms | Negligible overhead on top of any search |
 | Auto-capture | ~3-5s | Per-conversation extraction |
 | Memory gate (warm) | ~5-7s | Per-message classification |
+| Episode queries | ~10ms | Temporal filtering and trends |
+| Procedure evolution | ~5-10s | Ollama-powered step analysis |
 
 ---
 
@@ -234,14 +333,18 @@ and store them in memory under the "ffb-project" persona.
 
 ```
 zo-memory-system/
-├── SKILL.md                  # Full documentation (v3.0)
+├── SKILL.md                  # Full documentation (v3.2)
 ├── README.md                 # This file
 ├── scripts/
-│   ├── memory.ts             # Main CLI (hybrid search, store, stats)
+│   ├── memory.ts             # Main CLI (hybrid search, store, episodes, procedures, import, mcp)
 │   ├── memory-gate.ts        # Ollama-powered relevance gate
+│   ├── mcp-server.ts         # MCP server (5 tools, stdio transport)
+│   ├── import.ts             # Import pipeline (ChatGPT, Obsidian, markdown)
+│   ├── auto-capture.ts       # Conversation-to-fact extraction
 │   ├── graph.ts              # Knowledge graph CLI (link, find-connections, gaps)
 │   ├── graph-boost.ts        # Graph scoring module
-│   ├── auto-capture.ts       # Conversation-to-fact extraction
+│   ├── migrate-v2.sql        # Schema migration for episodic/procedural tables
+│   ├── rollback-v2.sql       # Migration rollback script
 │   ├── add-persona.sh        # Persona setup helper
 │   ├── install.sh            # Install to workspace
 │   ├── schema.sql            # Database schema

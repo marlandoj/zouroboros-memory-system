@@ -1,15 +1,19 @@
 ---
 name: zo-memory-system
-description: Hybrid SQLite + Vector persona memory system for Zo Computer. Graph-boosted search, BFS path finding, knowledge gap analysis, auto-capture pipeline. Gives personas persistent memory with semantic search (nomic-embed-text), HyDE query expansion (qwen2.5:1.5b), Ollama-powered memory gate, 5-tier decay, and swarm integration. Requires Ollama for embeddings.
+description: Hybrid SQLite + Vector persona memory system for Zo Computer. Episodic memory with temporal queries, graph-boosted search, BFS path finding, knowledge gap analysis, auto-capture pipeline. Gives personas persistent memory with semantic search (nomic-embed-text), HyDE query expansion (qwen2.5:1.5b), Ollama-powered memory gate, 5-tier decay, and swarm integration. Requires Ollama for embeddings.
 compatibility: Created for Zo Computer. Requires Bun and Ollama.
 metadata:
   author: marlandoj.zo.computer
-  updated: 2026-03-04
-  version: 3.0.0
+  updated: 2026-03-07
+  version: 3.2.0
 ---
-# Zo Memory System Skill v3.0.0
+# Zo Memory System Skill v3.2.0
 
 Give your Zo personas persistent memory with semantic understanding, graph intelligence, and automatic fact capture.
+
+**v3.2 Updates:** Procedural memory (versioned workflow patterns with Ollama-powered evolution), cognitive profiles (executor failure patterns + entity affinities), orchestrator integration (6-signal composite routing with procedure + temporal scoring, auto-episode creation after swarm runs)
+
+**v3.1 Updates:** Episodic memory (event-based "what happened" with outcomes), temporal queries (since/until filtering), velocity trends, DB migration system, auto-capture episode hook
 
 **v3.0 Updates:** Graph-boosted hybrid search (graph-boost.ts), BFS path finding & knowledge gap analysis (graph.ts), auto-capture pipeline for conversation-to-fact extraction (auto-capture.ts), co-capture linking, contradiction detection with supersession
 
@@ -17,6 +21,13 @@ Give your Zo personas persistent memory with semantic understanding, graph intel
 
 ## What You Get
 
+- **Procedural memory** — Versioned workflow patterns with step sequences, success/failure tracking, and Ollama-powered evolution
+- **Cognitive profiles** — Extended executor history with episode linkage, failure pattern classification, and entity affinity scores
+- **6-signal routing** — Orchestrator composite router enhanced with procedure + temporal scoring for memory-enriched task routing
+- **Episodic memory** — Event-based "what happened" records with outcomes, entity tagging, and duration tracking
+- **Temporal queries** — Filter episodes by time ("7 days ago", "last week", ISO dates) and outcome
+- **Velocity trends** — Track success/failure rates per entity over time (day/week/month granularity)
+- **DB migration system** — Safe, idempotent schema migrations with rollback support
 - **Hybrid search** — BM25 (FTS5) + vector similarity with RRF fusion
 - **Graph-boosted scoring** — Linked facts boost each other in search results
 - **Semantic understanding** — Finds facts even with paraphrased queries
@@ -310,6 +321,202 @@ Facts extracted from the same conversation are automatically linked with `relati
 
 ---
 
+## Episodic Memory (v3.1)
+
+Episodic memory captures "what happened" as events with outcomes — complementing facts (what is true) with episodes (what occurred).
+
+### Database Migration
+
+Before using episodic memory, run the migration to add the new tables:
+
+```bash
+bun scripts/memory.ts migrate
+```
+
+This is idempotent (safe to run multiple times) and preserves all existing data.
+
+### Querying Episodes
+
+```bash
+# List all episodes
+bun scripts/memory.ts episodes
+
+# Filter by time
+bun scripts/memory.ts episodes --since "7 days ago"
+bun scripts/memory.ts episodes --since "2026-03-01" --until "2026-03-07"
+bun scripts/memory.ts episodes --since "last week"
+
+# Filter by outcome
+bun scripts/memory.ts episodes --outcome failure
+bun scripts/memory.ts episodes --outcome success --since "30 days ago"
+
+# Filter by entity
+bun scripts/memory.ts episodes --entity "executor.claude-code"
+bun scripts/memory.ts episodes --entity "project.ffb-site" --since "7 days ago"
+```
+
+### Velocity Trends
+
+Track success/failure rates over time for any entity:
+
+```bash
+# Weekly trends (default)
+bun scripts/memory.ts trends --entity "executor.claude-code"
+
+# Daily granularity
+bun scripts/memory.ts trends --entity "project.ffb-site" --granularity day
+
+# Monthly, last 6 months
+bun scripts/memory.ts trends --entity "swarm.ffb" --granularity month --since "180 days ago"
+```
+
+Output:
+```
+Velocity trends for "executor.claude-code" (by week):
+
+  Period        Total  OK  Fail  Rate
+  ─────────────────────────────────────
+  2026-W06          1   1     0  100%
+  2026-W09          1   0     0  0%
+```
+
+### Time Formats
+
+The temporal query system accepts:
+- **Relative:** "7 days ago", "30 minutes ago", "2 weeks ago", "3 months ago"
+- **Named:** "today", "yesterday", "last week", "last month", "last year"
+- **ISO dates:** "2026-03-01"
+- **Unix timestamps:** raw seconds
+
+### Auto-Capture Episode Hook
+
+When auto-capture stores facts from a conversation, it automatically creates an episode recording the capture event. This means every auto-capture run becomes a queryable event in your episodic timeline.
+
+---
+
+## Procedural Memory (v3.2)
+
+Procedural memory captures reusable workflow patterns as versioned step sequences. Procedures track success/failure rates and can self-evolve using Ollama when failures accumulate.
+
+### Managing Procedures
+
+```bash
+# List all procedures (shows latest version per name)
+bun scripts/memory.ts procedures --list
+
+# Show steps for a specific procedure
+bun scripts/memory.ts procedures --show "site-review"
+
+# Record feedback after running a procedure
+bun scripts/memory.ts procedures --feedback <procedure-id> --success
+bun scripts/memory.ts procedures --feedback <procedure-id> --failure
+
+# Force Ollama-powered evolution based on failure episodes
+bun scripts/memory.ts procedures --evolve "site-review"
+```
+
+### Procedure Evolution
+
+When a procedure accumulates failures, `--evolve` uses Ollama (qwen2.5:7b) to analyze linked failure episodes and suggest improved steps. The evolved procedure:
+- Gets a new version number (v1 -> v2)
+- Links to its parent via `evolved_from`
+- Starts with fresh success/failure counts
+- May adjust timeouts, add fallback executors, or reorder steps
+
+### Cognitive Profiles
+
+Executor history (`~/.swarm/executor-history.json`) is extended with cognitive fields:
+- **`recent_episode_ids`** — Last 10 episode IDs for "why did this happen?" queries
+- **`failure_patterns`** — Auto-classified error types (timeout, mutation_failed, file_not_found, permission_denied)
+- **`entity_affinities`** — Per-entity success rates as exponential moving averages
+
+These fields are backward compatible — old history files parse correctly without them.
+
+### Orchestrator Integration (v4.5)
+
+The swarm orchestrator (`orchestrate-v4.ts`) now:
+1. **Creates episodes** — Every swarm run auto-creates an episode with outcome, duration, executor list, and task tags
+2. **6-signal composite routing** — Adds `procedureScore` (from procedure success rates) and `temporalScore` (from recent episodic performance) to the existing 4-signal composite router
+3. **Cognitive data on outcomes** — Success/failure calls pass error types and entity affinities to executor history
+
+---
+
+## MCP Server (v3.2)
+
+Expose the memory system as MCP tools for Claude Desktop, Cursor, and other MCP-compatible clients.
+
+### Starting the Server
+
+```bash
+bun scripts/mcp-server.ts          # Direct
+bun scripts/memory.ts mcp          # Via CLI
+```
+
+The server uses stdio transport and binds to localhost only.
+
+### Available Tools
+
+| Tool | Description |
+|------|-------------|
+| `memory_search` | Hybrid FTS + vector search with RRF fusion |
+| `memory_store` | Store a new fact with auto-generated embedding |
+| `memory_episodes` | Query episodic memory with temporal/entity filters |
+| `memory_procedures` | List or show workflow procedures |
+| `cognitive_profile` | Show executor cognitive profile (history, patterns, affinities) |
+
+### Claude Desktop Configuration
+
+Add to `~/.claude.json` or `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "zo-memory": {
+      "command": "bun",
+      "args": ["/home/workspace/Skills/zo-memory-system/scripts/mcp-server.ts"]
+    }
+  }
+}
+```
+
+---
+
+## Import Pipeline (v3.2)
+
+Import facts from external sources into the memory system.
+
+### Supported Sources
+
+| Source | Format | Extracts |
+|--------|--------|----------|
+| `chatgpt` | JSON export | Conversation summaries, key decisions |
+| `obsidian` | Markdown vault | Notes by section, respects frontmatter |
+| `markdown` | Any `.md` file | Section-based facts from headings |
+
+### Usage
+
+```bash
+# Preview (no changes)
+bun scripts/memory.ts import --source markdown --path ~/notes/decisions.md --dry-run
+
+# Import ChatGPT export
+bun scripts/memory.ts import --source chatgpt --path ~/chatgpt-export.json
+
+# Import Obsidian vault
+bun scripts/memory.ts import --source obsidian --path ~/Vault
+
+# Import single markdown
+bun scripts/memory.ts import --source markdown --path ~/notes/architecture.md
+```
+
+Features:
+- Duplicate detection (skips already-imported facts)
+- Auto-generated embeddings for semantic search
+- Section-based splitting (one fact per heading)
+- Obsidian frontmatter support (`entity`, `category` fields)
+
+---
+
 ## Memory Gate (Always-On Context Injection)
 
 The memory gate (`scripts/memory-gate.ts`) uses a local Ollama model to classify incoming messages and decide whether memory context should be injected. This enables always-on memory without injecting into every message.
@@ -386,6 +593,10 @@ The gate is what makes this memory system viable for swarm workflows. Without ga
 │   ├── fact_embeddings      # Vector embeddings (768d)
 │   ├── fact_links           # Associative routing graph
 │   ├── capture_log          # Auto-capture history
+│   ├── episodes             # Episodic memory (v3.1)
+│   ├── episode_entities     # Episode-entity junction (v3.1)
+│   ├── procedures           # Procedural memory (v3.1, Phase 2)
+│   ├── procedure_episodes   # Procedure-episode junction (v3.1, Phase 2)
 │   └── embedding_cache      # Content hash cache
 ├── personas/
 │   ├── [persona-1].md       # Critical facts per persona
@@ -393,11 +604,13 @@ The gate is what makes this memory system viable for swarm workflows. Without ga
 ├── checkpoints/
 │   └── [timestamp].json     # Saved states
 └── scripts/
-    ├── memory.ts            # Main CLI with graph-boosted search (v3)
+    ├── memory.ts            # Main CLI with episodic memory + graph-boosted search (v3.1)
     ├── memory-gate.ts       # Ollama-powered relevance gate (v2.3)
     ├── graph.ts             # Knowledge graph CLI (v3.0)
     ├── graph-boost.ts       # Graph scoring module (v3.0)
-    ├── auto-capture.ts      # Conversation-to-fact extraction (v3.0)
+    ├── auto-capture.ts      # Conversation-to-fact extraction + episode hook (v3.1)
+    ├── migrate-v2.sql       # Schema migration for episodic/procedural memory (v3.1)
+    ├── rollback-v2.sql      # Migration rollback script (v3.1)
     ├── add-persona.sh       # Persona setup helper
     ├── schema.sql           # Database schema
     ├── test-graph.ts        # Graph integration tests
@@ -456,6 +669,8 @@ bun scripts/test-capture.ts
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 3.2.0 | 2026-03-07 | Procedural memory (versioned workflow storage, CRUD, feedback, Ollama evolution), cognitive profiles (episode IDs, failure patterns, entity affinities in executor-history.json), orchestrator v4.5 integration (auto-episode on swarm completion, 6-signal composite routing with procedure + temporal scores), MCP server (5 tools: search, store, episodes, procedures, cognitive_profile), import pipeline (ChatGPT, Obsidian, markdown), enhanced CLI (profile, import, mcp commands) |
+| 3.1.0 | 2026-03-07 | Episodic memory (episodes table, entity tagging, temporal queries), velocity trends, DB migration system (migrate/rollback), auto-capture episode hook, stats v3 with episode/procedure counts |
 | 3.0.0 | 2026-03-04 | Graph-boosted hybrid search (graph-boost.ts), BFS path finding & knowledge gap analysis (graph.ts), auto-capture pipeline (auto-capture.ts), co-capture linking, contradiction detection, scoring redistribution (RRF 0.60 + Graph 0.15 + Freshness 0.15 + Confidence 0.10) |
 | 2.3.0 | 2026-03-03 | Memory gate (memory-gate.ts), always-on context injection via Zo rules, 24h model keep-alive, gate-filtered token savings for swarm workflows |
 | 2.2.0 | 2026-02-27 | Ollama health check, fetch timeouts, prune/decay/consolidate/link/graph commands, vector pre-filtering, adaptive decay, associative routing, PRAGMA busy_timeout |

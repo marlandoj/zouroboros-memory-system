@@ -364,6 +364,47 @@ async function runCapture(
       INSERT INTO capture_log (id, source, transcript_hash, facts_extracted, facts_skipped, contradictions, model, duration_ms)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(randomUUID(), options.source, hash, stored.length, skipped.length, contradictions, model, Date.now() - startTime);
+
+    // Create episode for this capture run (if episodes table exists)
+    if (stored.length > 0) {
+      const hasEpisodesTable = db.prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='episodes'"
+      ).get();
+
+      if (hasEpisodesTable) {
+        const episodeId = randomUUID();
+        const captureEntities = [...new Set(stored.map(f => f.entity))];
+        const outcome = contradictions > 0 ? "resolved" as const : "success" as const;
+
+        db.prepare(`
+          INSERT INTO episodes (id, summary, outcome, happened_at, duration_ms, metadata, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          episodeId,
+          `Auto-capture from ${options.source}: ${stored.length} facts stored, ${skipped.length} skipped, ${contradictions} contradictions`,
+          outcome,
+          Math.floor(Date.now() / 1000),
+          Date.now() - startTime,
+          JSON.stringify({
+            source: options.source,
+            factsStored: stored.length,
+            factsSkipped: skipped.length,
+            contradictions,
+            model,
+            entities: captureEntities,
+          }),
+          Math.floor(Date.now() / 1000)
+        );
+
+        const insertEpEntity = db.prepare(
+          "INSERT OR IGNORE INTO episode_entities (episode_id, entity) VALUES (?, ?)"
+        );
+        for (const entity of captureEntities) {
+          insertEpEntity.run(episodeId, entity);
+        }
+        insertEpEntity.run(episodeId, `capture.${options.source.replace(/[^a-zA-Z0-9.-]/g, "-")}`);
+      }
+    }
   }
 
   db.close();
