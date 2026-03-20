@@ -21,6 +21,13 @@ import { Database } from "bun:sqlite";
 import { randomUUID, createHash } from "crypto";
 import { readFileSync, existsSync, statSync, readdirSync } from "fs";
 import { join, extname, basename, relative } from "path";
+import {
+  createEpisodeRecord,
+  ensureContinuationSchema,
+  extractOpenLoopsFromText,
+  resolveMatchingOpenLoops,
+  upsertOpenLoop,
+} from "./continuation";
 
 // --- Configuration ---
 const DB_PATH = process.env.ZO_MEMORY_DB || "/home/workspace/.zo/memory/shared-facts.db";
@@ -109,6 +116,7 @@ function getDb(): Database {
       created_at INTEGER DEFAULT (strftime('%s', 'now'))
     );
   `);
+  ensureContinuationSchema(db);
   return db;
 }
 
@@ -371,21 +379,16 @@ function createEpisode(db: Database, source: string, stored: number, skipped: nu
   const hasTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='episodes'").get();
   if (!hasTable) return;
 
-  const episodeId = randomUUID();
   const outcome = contradictions > 0 ? "resolved" : "success";
 
-  db.prepare(`
-    INSERT INTO episodes (id, summary, outcome, happened_at, duration_ms, metadata, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(episodeId,
-    `Conversation capture: ${stored} facts stored, ${skipped} skipped, ${contradictions} contradictions`,
-    outcome, Math.floor(Date.now() / 1000), durationMs,
-    JSON.stringify({ source, stored, skipped, contradictions, entities }),
-    Math.floor(Date.now() / 1000));
-
-  const insertEntity = db.prepare("INSERT OR IGNORE INTO episode_entities (episode_id, entity) VALUES (?, ?)");
-  for (const entity of entities) insertEntity.run(episodeId, entity);
-  insertEntity.run(episodeId, "capture.conversation");
+  createEpisodeRecord(db, {
+    summary: `Conversation capture: ${stored} facts stored, ${skipped} skipped, ${contradictions} contradictions`,
+    outcome,
+    happenedAt: Math.floor(Date.now() / 1000),
+    durationMs,
+    entities: [...entities, "capture.conversation"],
+    metadata: { source, stored, skipped, contradictions, entities },
+  });
 }
 
 // --- Main Pipeline ---
@@ -394,18 +397,20 @@ async function processArtifacts(artifacts: ArtifactFile[], dryRun: boolean): Pro
   const db = getDb();
 
   let model = CAPTURE_MODEL;
+  let heuristicOnly = false;
   if (!(await checkModelAvailable(model))) {
     console.log(`${model} not available, trying fallback: ${CAPTURE_FALLBACK_MODEL}`);
     model = CAPTURE_FALLBACK_MODEL;
     if (!(await checkModelAvailable(model))) {
-      console.error("No extraction model available. Run: ollama pull qwen2.5:7b");
-      db.close();
-      return;
+      console.warn("No extraction model available. Continuing with heuristic open-loop capture only.");
+      heuristicOnly = true;
+      model = "heuristic-only";
     }
   }
 
   let totalStored = 0, totalSkipped = 0, totalContradictions = 0, totalLinks = 0;
   let filesProcessed = 0, filesSkippedDedup = 0;
+  let totalOpenLoopsStored = 0, totalOpenLoopsResolved = 0;
   const allEntities: string[] = [];
   const startTime = Date.now();
 
@@ -426,11 +431,18 @@ async function processArtifacts(artifacts: ArtifactFile[], dryRun: boolean): Pro
 
     console.log(`\n--- ${relPath} (${(artifact.size / 1024).toFixed(1)} KB) ---`);
 
-    const facts = await extractFacts(content, model);
+    const facts = heuristicOnly ? [] : await extractFacts(content, model);
 
     if (facts.length === 0) {
-      console.log("  No extractable facts.");
+      console.log(heuristicOnly ? "  Heuristic-only mode: skipping fact extraction." : "  No extractable facts. Using heuristic open-loop capture only.");
       if (!dryRun) {
+        totalOpenLoopsResolved += resolveMatchingOpenLoops(db, content);
+        const loops = extractOpenLoopsFromText(content, source);
+        for (const loop of loops) {
+          if (loop.status === "resolved") continue;
+          upsertOpenLoop(db, loop);
+          totalOpenLoopsStored++;
+        }
         db.prepare(`INSERT INTO capture_log (id, source, transcript_hash, facts_extracted, facts_skipped, contradictions, model, duration_ms)
           VALUES (?, ?, ?, 0, 0, 0, ?, ?)`).run(randomUUID(), source, hash, model, 0);
       }
@@ -448,6 +460,16 @@ async function processArtifacts(artifacts: ArtifactFile[], dryRun: boolean): Pro
     allEntities.push(...[...new Set(facts.map(f => f.entity))]);
 
     if (!dryRun) {
+      totalOpenLoopsResolved += resolveMatchingOpenLoops(db, content);
+      const loops = extractOpenLoopsFromText(content, source);
+      for (const loop of loops) {
+        if (loop.status === "resolved") continue;
+        upsertOpenLoop(db, loop);
+        totalOpenLoopsStored++;
+      }
+    }
+
+    if (!dryRun) {
       db.prepare(`INSERT INTO capture_log (id, source, transcript_hash, facts_extracted, facts_skipped, contradictions, model, duration_ms)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(randomUUID(), source, hash, result.stored, result.skipped, result.contradictions, model, 0);
     }
@@ -457,7 +479,7 @@ async function processArtifacts(artifacts: ArtifactFile[], dryRun: boolean): Pro
 
   const durationMs = Date.now() - startTime;
 
-  if (!dryRun && totalStored > 0) {
+  if (!dryRun && (totalStored > 0 || totalOpenLoopsStored > 0 || totalOpenLoopsResolved > 0)) {
     createEpisode(db, "conversation-capture", totalStored, totalSkipped, totalContradictions, durationMs, [...new Set(allEntities)]);
   }
 
@@ -472,6 +494,8 @@ async function processArtifacts(artifacts: ArtifactFile[], dryRun: boolean): Pro
   console.log(`Facts skipped: ${totalSkipped}`);
   console.log(`Contradictions: ${totalContradictions}`);
   console.log(`Co-capture links: ${totalLinks}`);
+  console.log(`Open loops stored: ${totalOpenLoopsStored}`);
+  console.log(`Open loops resolved: ${totalOpenLoopsResolved}`);
   console.log(`Duration: ${(durationMs / 1000).toFixed(1)}s`);
 }
 

@@ -16,6 +16,13 @@
 import { Database } from "bun:sqlite";
 import { randomUUID, createHash } from "crypto";
 import { readFileSync, existsSync } from "fs";
+import {
+  createEpisodeRecord,
+  ensureContinuationSchema,
+  extractOpenLoopsFromText,
+  resolveMatchingOpenLoops,
+  upsertOpenLoop,
+} from "./continuation";
 
 // --- Configuration ---
 const DB_PATH = process.env.ZO_MEMORY_DB || "/home/workspace/.zo/memory/shared-facts.db";
@@ -90,6 +97,7 @@ function getDb(): Database {
       created_at INTEGER DEFAULT (strftime('%s', 'now'))
     );
   `);
+  ensureContinuationSchema(db);
   return db;
 }
 
@@ -242,39 +250,37 @@ async function runCapture(
     return { stored: [], skipped: [], contradictions: 0, links_created: 0, duration_ms: 0 };
   }
 
-  // Select model
   let model = CAPTURE_MODEL;
+  let heuristicOnly = false;
+  let candidates: CapturedFact[] = [];
+
   const primaryAvailable = await checkModelAvailable(model);
   if (!primaryAvailable) {
     console.log(`${model} not available, trying fallback: ${CAPTURE_FALLBACK_MODEL}`);
     model = CAPTURE_FALLBACK_MODEL;
     const fallbackAvailable = await checkModelAvailable(model);
     if (!fallbackAvailable) {
-      console.error("No extraction model available. Run: ollama pull qwen2.5:7b");
-      db.close();
-      return { stored: [], skipped: [], contradictions: 0, links_created: 0, duration_ms: Date.now() - startTime };
+      console.warn("No extraction model available. Continuing with heuristic open-loop capture only.");
+      heuristicOnly = true;
+      model = "heuristic-only";
     }
   }
 
-  console.log(`Extracting facts with ${model}...`);
-  const candidates = await extractFacts(transcript, model);
-
-  if (candidates.length === 0) {
-    console.log("No facts extracted from transcript.");
-    if (!options.dryRun) {
-      db.prepare(`
-        INSERT INTO capture_log (id, source, transcript_hash, facts_extracted, facts_skipped, contradictions, model, duration_ms)
-        VALUES (?, ?, ?, 0, 0, 0, ?, ?)
-      `).run(randomUUID(), options.source, hash, model, Date.now() - startTime);
+  if (!heuristicOnly) {
+    console.log(`Extracting facts with ${model}...`);
+    candidates = await extractFacts(transcript, model);
+    if (candidates.length === 0) {
+      console.log("No facts extracted from transcript. Continuing with heuristic open-loop capture.");
+      heuristicOnly = true;
     }
-    db.close();
-    return { stored: [], skipped: [], contradictions: 0, links_created: 0, duration_ms: Date.now() - startTime };
   }
 
   const stored: CapturedFact[] = [];
   const skipped: Array<{ fact: CapturedFact; reason: string }> = [];
   let contradictions = 0;
   let linksCreated = 0;
+  let openLoopsStored = 0;
+  let openLoopsResolved = 0;
   const storedIds: string[] = [];
 
   for (const fact of candidates) {
@@ -358,51 +364,52 @@ async function runCapture(
     }
   }
 
-  // Log capture
+  const extractedLoops = extractOpenLoopsFromText(transcript, options.source);
+  if (!options.dryRun && extractedLoops.length > 0) {
+    openLoopsResolved += resolveMatchingOpenLoops(db, transcript);
+    for (const loop of extractedLoops) {
+      if (loop.status === "resolved") continue;
+      upsertOpenLoop(db, {
+        ...loop,
+        persona: options.persona,
+      });
+      openLoopsStored++;
+    }
+  }
+
   if (!options.dryRun) {
     db.prepare(`
       INSERT INTO capture_log (id, source, transcript_hash, facts_extracted, facts_skipped, contradictions, model, duration_ms)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(randomUUID(), options.source, hash, stored.length, skipped.length, contradictions, model, Date.now() - startTime);
 
-    // Create episode for this capture run (if episodes table exists)
-    if (stored.length > 0) {
+    if (stored.length > 0 || openLoopsStored > 0 || openLoopsResolved > 0) {
       const hasEpisodesTable = db.prepare(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='episodes'"
       ).get();
 
       if (hasEpisodesTable) {
-        const episodeId = randomUUID();
         const captureEntities = [...new Set(stored.map(f => f.entity))];
         const outcome = contradictions > 0 ? "resolved" as const : "success" as const;
 
-        db.prepare(`
-          INSERT INTO episodes (id, summary, outcome, happened_at, duration_ms, metadata, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          episodeId,
-          `Auto-capture from ${options.source}: ${stored.length} facts stored, ${skipped.length} skipped, ${contradictions} contradictions`,
+        createEpisodeRecord(db, {
+          summary: `Auto-capture from ${options.source}: ${stored.length} facts stored, ${skipped.length} skipped, ${contradictions} contradictions, ${openLoopsStored} open loops, ${openLoopsResolved} resolved`,
           outcome,
-          Math.floor(Date.now() / 1000),
-          Date.now() - startTime,
-          JSON.stringify({
+          happenedAt: Math.floor(Date.now() / 1000),
+          durationMs: Date.now() - startTime,
+          entities: [...captureEntities, `capture.${options.source.replace(/[^a-zA-Z0-9.-]/g, "-")}`],
+          metadata: {
             source: options.source,
             factsStored: stored.length,
             factsSkipped: skipped.length,
             contradictions,
+            openLoopsStored,
+            openLoopsResolved,
             model,
+            heuristicOnly,
             entities: captureEntities,
-          }),
-          Math.floor(Date.now() / 1000)
-        );
-
-        const insertEpEntity = db.prepare(
-          "INSERT OR IGNORE INTO episode_entities (episode_id, entity) VALUES (?, ?)"
-        );
-        for (const entity of captureEntities) {
-          insertEpEntity.run(episodeId, entity);
-        }
-        insertEpEntity.run(episodeId, `capture.${options.source.replace(/[^a-zA-Z0-9.-]/g, "-")}`);
+          },
+        });
       }
     }
   }

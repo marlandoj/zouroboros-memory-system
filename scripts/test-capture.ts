@@ -12,6 +12,15 @@
 import { Database } from "bun:sqlite";
 import { randomUUID, createHash } from "crypto";
 import { unlinkSync, existsSync } from "fs";
+import {
+  createEpisodeRecord,
+  detectContinuation,
+  ensureContinuationSchema,
+  resolveMatchingOpenLoops,
+  searchEpisodesForContinuation,
+  searchOpenLoopsForContinuation,
+  upsertOpenLoop,
+} from "./continuation";
 
 const TEST_DB_PATH = "/tmp/zo-memory-test-capture.db";
 
@@ -80,7 +89,33 @@ function setupDb(): Database {
       duration_ms INTEGER,
       created_at INTEGER DEFAULT (strftime('%s', 'now'))
     );
+    CREATE TABLE episodes (
+      id TEXT PRIMARY KEY,
+      summary TEXT NOT NULL,
+      outcome TEXT NOT NULL,
+      happened_at INTEGER NOT NULL,
+      duration_ms INTEGER,
+      procedure_id TEXT,
+      metadata TEXT,
+      created_at INTEGER DEFAULT (strftime('%s','now'))
+    );
+    CREATE TABLE episode_entities (
+      episode_id TEXT NOT NULL,
+      entity TEXT NOT NULL,
+      PRIMARY KEY (episode_id, entity)
+    );
+    CREATE TABLE procedures (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      version INTEGER NOT NULL DEFAULT 1,
+      steps TEXT NOT NULL,
+      success_count INTEGER DEFAULT 0,
+      failure_count INTEGER DEFAULT 0,
+      evolved_from TEXT,
+      created_at INTEGER DEFAULT (strftime('%s','now'))
+    );
   `);
+  ensureContinuationSchema(db);
   return db;
 }
 
@@ -265,6 +300,63 @@ function testMaxFactsCap() {
   assert(capped.length === MAX_FACTS, `Capped at ${MAX_FACTS} facts (from ${candidates.length})`);
 }
 
+function testOpenLoopLifecycle() {
+  console.log("\n--- Test: Open Loop Lifecycle ---");
+  db = setupDb();
+
+  const loop = upsertOpenLoop(db, {
+    persona: "shared",
+    title: "Fix dashboard data mismatch",
+    summary: "Need to fix dashboard data mismatch before next review",
+    kind: "bug",
+    entity: "project.dashboard",
+    source: "test",
+  });
+
+  assert(loop.status === "open", "Open loop inserted with open status");
+
+  const matches = searchOpenLoopsForContinuation(db, "dashboard mismatch review", { limit: 5 });
+  assert(matches.length >= 1, "Open loop searchable via continuation search");
+  assert(matches[0].title.includes("dashboard"), "Returned open loop matches dashboard context");
+
+  const resolved = resolveMatchingOpenLoops(db, "The dashboard data mismatch is fixed and completed now");
+  assert(resolved >= 1, "Matching open loop resolved from completion text");
+
+  const row = db.prepare("SELECT status FROM open_loops WHERE id = ?").get(loop.id) as any;
+  assert(row.status === "resolved", "Open loop status updated to resolved");
+
+  db.close();
+}
+
+function testContinuationDetection() {
+  console.log("\n--- Test: Continuation Detection ---");
+  const positive = detectContinuation("where did we leave off on the dashboard review?");
+  assert(positive.needsMemory === true, "Continuation detector flags follow-on work");
+  assert(positive.score >= 2, "Continuation score above threshold");
+
+  const negative = detectContinuation("hello");
+  assert(negative.needsMemory === false, "Continuation detector ignores greetings");
+}
+
+function testEpisodeSearchIndex() {
+  console.log("\n--- Test: Episode Search Index ---");
+  db = setupDb();
+
+  createEpisodeRecord(db, {
+    summary: "Worked on the health dashboard vitals layout and left a pending chart fix",
+    outcome: "ongoing",
+    happenedAt: Math.floor(Date.now() / 1000),
+    entities: ["project.health-dashboard", "ui.dashboard"],
+    metadata: { nextStep: "Fix chart alignment" },
+  });
+
+  const matches = searchEpisodesForContinuation(db, "health dashboard chart fix", { limit: 5, windowDays: 14 });
+  assert(matches.length >= 1, "Episode document searchable for continuation recall");
+  assert(matches[0].summary.includes("health dashboard"), "Episode summary returned in search results");
+
+  db.close();
+}
+
 // --- Run All Tests ---
 function run() {
   console.log("zo-memory-system — Auto-Capture Integration Tests\n");
@@ -275,6 +367,9 @@ function run() {
   testCaptureLog();
   testQualityFilters();
   testMaxFactsCap();
+  testOpenLoopLifecycle();
+  testContinuationDetection();
+  testEpisodeSearchIndex();
 
   // Cleanup
   if (existsSync(TEST_DB_PATH)) unlinkSync(TEST_DB_PATH);

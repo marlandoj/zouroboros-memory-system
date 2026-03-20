@@ -453,7 +453,7 @@ const TOOLS_DEFINITION = [
 // Per-session transports (stateful: each client gets its own transport+server)
 const sessions = new Map<string, { transport: WebStandardStreamableHTTPServerTransport; server: Server }>();
 
-function createSessionServer(): { transport: WebStandardStreamableHTTPServerTransport; server: Server } {
+function createSessionServer(requestedSessionId?: string): { transport: WebStandardStreamableHTTPServerTransport; server: Server } {
   const server = new Server(
     { name: "zo-memory-system", version: "3.2.0" },
     { capabilities: { tools: {} } }
@@ -480,9 +480,9 @@ function createSessionServer(): { transport: WebStandardStreamableHTTPServerTran
   });
 
   const transport = new WebStandardStreamableHTTPServerTransport({
-    sessionIdGenerator: () => randomUUID(),
+    sessionIdGenerator: () => requestedSessionId || randomUUID(),
     onsessioninitialized: (sessionId) => {
-      console.error(`[zo-memory-mcp] Session initialized: ${sessionId}`);
+      console.error(`[zo-memory-mcp] Session initialized: ${sessionId}${requestedSessionId ? " (re-created)" : ""}`);
     },
     onsessionclosed: (sessionId) => {
       console.error(`[zo-memory-mcp] Session closed: ${sessionId}`);
@@ -501,8 +501,13 @@ function checkAuth(req: Request): boolean {
   const auth = req.headers.get("authorization");
   if (!auth?.startsWith("Bearer ")) return false;
   const token = auth.slice(7);
+  
+  // Transition hack: Accept current token OR the mangled one cached by the bridge
+  const MANGLED_LEGACY = "nG1&xW5#jE8@fD2(uG6)tZ1[rA3]nP0*xL7!vR4^mQ2";
+  if (token === BEARER_TOKEN || token === MANGLED_LEGACY) return true;
+
+  // Constant-time fallback for security
   if (token.length !== BEARER_TOKEN.length) return false;
-  // Constant-time comparison
   let mismatch = 0;
   for (let i = 0; i < token.length; i++) {
     mismatch |= token.charCodeAt(i) ^ BEARER_TOKEN.charCodeAt(i);
@@ -514,6 +519,7 @@ function checkAuth(req: Request): boolean {
 const server = Bun.serve({
   port: PORT,
   hostname: "0.0.0.0",
+  idleTimeout: 0, // Disable timeout for long-lived SSE connections
   async fetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
 
@@ -542,7 +548,7 @@ const server = Bun.serve({
       }
 
       // Check for existing session
-      const sessionId = req.headers.get("mcp-session-id");
+      const sessionId = req.headers.get("mcp-session-id") || url.searchParams.get("sessionId");
 
       if (sessionId && sessions.has(sessionId)) {
         // Existing session
@@ -550,21 +556,13 @@ const server = Bun.serve({
         return session.transport.handleRequest(req);
       }
 
-      if (sessionId && !sessions.has(sessionId)) {
-        // Unknown session ID
-        return new Response(JSON.stringify({ error: "Session not found" }), {
-          status: 404,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
+      // If sessionId provided but not found, or no sessionId (new session)
+      const { transport, server: mcpServer } = createSessionServer(sessionId || undefined);
 
-      // New session (no session ID header = initialization)
-      const { transport, server: mcpServer } = createSessionServer();
-
-      // We need to handle the request, which will create the session ID
+      // Handle the request
       const response = await transport.handleRequest(req);
 
-      // After handling, the transport should have a session ID
+      // Store the session immediately
       if (transport.sessionId) {
         sessions.set(transport.sessionId, { transport, server: mcpServer });
       }

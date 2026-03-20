@@ -14,6 +14,9 @@ This skill gives your AI personas long-term memory that persists across conversa
 - **Hybrid Search** -- Combines keyword matching (BM25) with vector similarity so you find facts even when you phrase things differently
 - **Knowledge Graph** -- Link facts together with typed relationships, find connections between entities, and identify gaps in your knowledge base
 - **Auto-Capture** -- Feed a conversation transcript in, get structured facts out. No manual entry required
+- **Automatic Continuation Recall** -- Silently blends relevant facts, searchable episodes, and open loops from the last 14 days when a message looks like follow-on work
+- **First-Class Open Loops** -- Stores unfinished tasks, unresolved bugs/incidents, pending approvals, and next-step commitments as queryable records
+- **Searchable Session Summaries** -- Episodes are indexed for continuation retrieval, not just listed by time
 - **Episodic Memory** -- Record "what happened" as events with outcomes, entity tagging, and temporal queries ("since last week", "failures in March")
 - **Procedural Memory** -- Versioned workflow patterns that track success/failure rates and self-evolve using Ollama when failures accumulate
 - **MCP Server** -- Expose memory as MCP tools (search, store, episodes, procedures, cognitive profiles) for Claude Desktop, Cursor, and other MCP clients
@@ -73,6 +76,11 @@ bun scripts/memory.ts store \
 #### Search your memory
 
 ```bash
+# Continuation recall across facts + episodes + open loops
+bun scripts/memory.ts continuation "where did we leave off on the dashboard?"
+bun scripts/memory.ts open-loops --status open
+bun scripts/memory.ts resolve-loop "The dashboard issue is fixed now"
+
 # Semantic + keyword hybrid search (recommended)
 bun scripts/memory.ts hybrid "why did we choose SQLite"
 
@@ -98,7 +106,7 @@ curl -fsSL https://ollama.com/install.sh | sh
 
 # Pull required models
 ollama pull nomic-embed-text   # Embeddings (768 dimensions)
-ollama pull qwen2.5:1.5b       # Query expansion + memory gate
+ollama pull qwen2.5:1.5b       # HyDE expansion + memory gate
 ollama pull qwen2.5:7b         # Auto-capture fact extraction (optional)
 ```
 
@@ -168,16 +176,31 @@ Quality safeguards: confidence threshold (0.6), minimum value length (10 chars),
 
 ### Memory Gate
 
-The memory gate classifies each incoming message: does it need stored memory?
+The memory gate classifies each incoming message: does it need stored memory? It now checks for continuation-like turns first, using blended recall across facts, episodes, and open loops before falling back to the standard hybrid search path.
 
 ```bash
 bun scripts/memory-gate.ts "what did we decide about pricing?"  # Exit 0: results found
+bun scripts/memory-gate.ts "where did we leave off on the dashboard?"  # Exit 0: continuation recall or fallback search
 bun scripts/memory-gate.ts "hello"                               # Exit 2: no memory needed
 ```
 
 **Exit codes:** 0 = results found, 1 = error, 2 = no memory needed, 3 = memory needed but nothing found
 
 In a real swarm with 11 tasks, the gate keeps memory token usage at 2.5-6.9% of the context budget vs. 34-120% without it.
+
+### Continuation Recall Evaluation
+
+A fixture-backed evaluator now measures 14-day continuation recall quality against a labeled scenario set.
+
+```bash
+bun scripts/eval-continuation.ts
+```
+
+Artifacts:
+- `assets/continuation-eval-fixture-set.json` — labeled facts, episodes, open loops, and expected retrieval cases
+- `scripts/eval-continuation.ts` — loads the fixture DB, runs continuation detection/retrieval, and checks the success-rate threshold
+
+Current target: **85%** minimum pass rate.
 
 ### Episodic Memory
 
