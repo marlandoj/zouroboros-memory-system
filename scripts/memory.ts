@@ -22,6 +22,7 @@ import { randomUUID, createHash } from "crypto";
 import { join } from "path";
 import { readFileSync } from "fs";
 import { computeGraphBoost, findGraphNeighbors } from "./graph-boost";
+import { extractWikilinks, resolveWikilinkTargets } from "./wikilink-utils";
 import {
   createEpisodeRecord,
   detectContinuation,
@@ -319,7 +320,21 @@ async function storeWithEmbedding(entry: Omit<MemoryEntry, "id" | "createdAt" | 
       VALUES (?, ?, ?)
     `).run(id, Buffer.from(new Float32Array(embedding).buffer), EMBEDDING_MODEL);
   }
-  
+
+  // Parse wikilinks from value and create fact_links edges
+  const wikilinks = extractWikilinks(entry.value);
+  if (wikilinks.length > 0) {
+    const resolved = resolveWikilinkTargets(db, wikilinks, {
+      sourcePersona: entry.persona,
+      sourceId: id,
+    });
+    for (const link of resolved) {
+      db.prepare(
+        "INSERT OR IGNORE INTO fact_links (source_id, target_id, relation, weight) VALUES (?, ?, 'wikilink', 1.0)"
+      ).run(id, link.targetId);
+    }
+  }
+
   return {
     ...entry,
     id,
