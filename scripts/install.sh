@@ -5,7 +5,7 @@
 set -e
 
 echo "════════════════════════════════════════════════════════════"
-echo "  Zo Memory System v2.1 - Installation"
+echo "  Zo Memory System v3.x - Installation"
 echo "════════════════════════════════════════════════════════════"
 echo
 
@@ -41,7 +41,10 @@ mkdir -p "$MEMORY_DIR"/{personas,checkpoints,scripts}
 
 echo "📋 Installing scripts..."
 cp "$SKILL_DIR/scripts/memory.ts" "$MEMORY_DIR/scripts/"
+cp "$SKILL_DIR/scripts/continuation.ts" "$MEMORY_DIR/scripts/"
 cp "$SKILL_DIR/scripts/schema.sql" "$MEMORY_DIR/scripts/"
+cp "$SKILL_DIR/scripts/migrate-v3.sql" "$MEMORY_DIR/scripts/"
+cp "$SKILL_DIR/scripts/rollback-v3.sql" "$MEMORY_DIR/scripts/"
 cp "$SKILL_DIR/scripts/add-persona.sh" "$MEMORY_DIR/scripts/"
 cp "$SKILL_DIR/scripts/demo.ts" "$MEMORY_DIR/scripts/"
 chmod +x "$MEMORY_DIR/scripts/add-persona.sh"

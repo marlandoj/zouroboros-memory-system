@@ -14,6 +14,8 @@
  *   3 = memory needed but no results found
  */
 
+import { detectContinuation } from "./continuation";
+
 const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434";
 const GATE_MODEL = process.env.ZO_GATE_MODEL || "qwen2.5:1.5b";
 const MEMORY_SCRIPT = "/home/workspace/Skills/zo-memory-system/scripts/memory.ts";
@@ -31,50 +33,21 @@ async function callOllama(message: string): Promise<GateResponse> {
 Answer ONLY with valid JSON, no other text.
 
 Rules:
-- DEFAULT to "needs_memory": false. Only set true when the message CLEARLY references past work, projects, stored preferences, prior decisions, specific people/contacts, saved configurations, or ongoing tasks from previous sessions.
-- "needs_memory": false for: greetings, small talk, general knowledge questions, self-contained instructions, code explanations, math, definitions, how-to questions, opinions, or anything answerable without prior conversation history.
-- "keywords": 2-4 specific search terms extracted from the message (only if needs_memory is true, empty array otherwise). Never include generic words like "hello", "how", "what".
+- Favor recall for ongoing or continuation-like work. Missing relevant prior context is worse than retrieving slightly extra context.
+- Set "needs_memory": true when the message may plausibly continue prior work, ask for status/progress/results, reference an existing project/document/system, or use pronouns/ellipsis that imply prior context.
+- Keep "needs_memory": false for clearly self-contained greetings, trivia, definitions, generic how-to questions, math, or standalone coding prompts.
+- "keywords": 2-6 specific search terms extracted from the message (only if needs_memory is true, empty array otherwise). Never include generic words like "hello", "how", "what".
 - "reason": one short sentence explaining your decision
 
 Examples:
 User: "hello"
 {"needs_memory": false, "keywords": [], "reason": "Simple greeting"}
 
-User: "hello how are you"
-{"needs_memory": false, "keywords": [], "reason": "Casual greeting"}
-
-User: "hey whats up"
-{"needs_memory": false, "keywords": [], "reason": "Casual greeting"}
-
-User: "good morning"
-{"needs_memory": false, "keywords": [], "reason": "Simple greeting"}
-
-User: "thanks!"
-{"needs_memory": false, "keywords": [], "reason": "Acknowledgment"}
-
-User: "what did we decide about the FFB pricing?"
-{"needs_memory": true, "keywords": ["FFB", "pricing", "decision"], "reason": "References past decision about a project"}
-
-User: "what's 2+2?"
-{"needs_memory": false, "keywords": [], "reason": "General knowledge question"}
-
 User: "update the supplier scorecard"
-{"needs_memory": true, "keywords": ["supplier", "scorecard"], "reason": "References an existing document/workflow"}
-
-User: "how's the portfolio doing?"
-{"needs_memory": true, "keywords": ["portfolio", "performance"], "reason": "References ongoing financial tracking"}
-
-User: "can you explain what async/await does in javascript?"
-{"needs_memory": false, "keywords": [], "reason": "General programming knowledge question"}
-
-User: "write a python function to sort a list"
-{"needs_memory": false, "keywords": [], "reason": "Self-contained coding request"}
-
-User: "what time is it?"
-{"needs_memory": false, "keywords": [], "reason": "General utility question"}
+{"needs_memory": true, "keywords": ["supplier", "scorecard"], "reason": "Likely continuation of an existing workflow"}
 
 User: "where did we leave off on the website review?"
-{"needs_memory": true, "keywords": ["website", "review", "progress"], "reason": "References prior work status"}
+{"needs_memory": true, "keywords": ["website", "review", "progress"], "reason": "Explicit continuation request"}
 
 User: "check the current zo resources"
 {"needs_memory": false, "keywords": [], "reason": "Self-contained system command"}
@@ -118,10 +91,12 @@ User: "${message.replace(/"/g, '\\"').replace(/\n/g, ' ')}"`;
   };
 }
 
-async function searchMemory(keywords: string[]): Promise<string> {
+async function searchMemory(keywords: string[], preferExact: boolean = false): Promise<string> {
   const query = keywords.join(" ");
+  const command = preferExact ? "search" : "hybrid";
+  const extraArgs = preferExact ? [] : ["--no-hyde"];
   const proc = Bun.spawn(
-    ["bun", MEMORY_SCRIPT, "hybrid", query, "--limit", String(MAX_RESULTS), "--no-hyde"],
+    ["bun", MEMORY_SCRIPT, command, query, "--limit", String(MAX_RESULTS), ...extraArgs],
     {
       stdout: "pipe",
       stderr: "pipe",
@@ -132,8 +107,7 @@ async function searchMemory(keywords: string[]): Promise<string> {
   const stderr = await new Response(proc.stderr).text();
   await proc.exited;
 
-  if (proc.exitCode !== 0) {
-    // Fallback to FTS search
+  if (proc.exitCode !== 0 && !preferExact) {
     const ftsProc = Bun.spawn(
       ["bun", MEMORY_SCRIPT, "search", query, "--limit", String(MAX_RESULTS)],
       {
@@ -149,6 +123,20 @@ async function searchMemory(keywords: string[]): Promise<string> {
   return stdout.trim();
 }
 
+async function searchContinuation(message: string): Promise<string> {
+  const proc = Bun.spawn(
+    ["bun", MEMORY_SCRIPT, "continuation", message, "--limit", String(MAX_RESULTS), "--no-hyde"],
+    {
+      stdout: "pipe",
+      stderr: "pipe",
+    }
+  );
+
+  const stdout = await new Response(proc.stdout).text();
+  await proc.exited;
+  return stdout.trim();
+}
+
 async function main() {
   const message = process.argv.slice(2).join(" ").trim();
 
@@ -158,6 +146,16 @@ async function main() {
   }
 
   try {
+    const continuation = detectContinuation(message);
+
+    if (continuation.needsMemory) {
+      const continuationResults = await searchContinuation(message);
+      if (continuationResults && !continuationResults.includes("No continuation context found")) {
+        console.log(continuationResults);
+        process.exit(0);
+      }
+    }
+
     const gate = await callOllama(message);
 
     if (!gate.needs_memory) {
@@ -170,7 +168,7 @@ async function main() {
       process.exit(3);
     }
 
-    const results = await searchMemory(gate.keywords);
+    const results = await searchMemory(gate.keywords, continuation.needsMemory);
 
     if (!results || results.includes("No results") || results.includes("Found 0 results") || results.length < 10) {
       process.exit(3);

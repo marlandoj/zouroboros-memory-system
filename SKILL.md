@@ -21,6 +21,9 @@ Give your Zo personas persistent memory with semantic understanding, graph intel
 
 ## What You Get
 
+- **Automatic continuation recall** — Detects continuation-like messages and silently blends relevant context from the last 14 days
+- **First-class open loops** — Stores unfinished tasks, unresolved bugs/incidents, pending approvals, and next-step commitments as queryable records
+- **Searchable session summaries** — Episodes are indexed for continuation retrieval, not just listed by time
 - **Procedural memory** — Versioned workflow patterns with step sequences, success/failure tracking, and Ollama-powered evolution
 - **Cognitive profiles** — Extended executor history with episode linkage, failure pattern classification, and entity affinity scores
 - **6-signal routing** — Orchestrator composite router enhanced with procedure + temporal scoring for memory-enriched task routing
@@ -140,6 +143,13 @@ bun scripts/memory.ts store \
 ```
 
 ### Search Memory
+
+**Continuation Recall (facts + episodes + open loops):**
+```bash
+bun scripts/memory.ts continuation "where did we leave off on the health dashboard?"
+bun scripts/memory.ts open-loops --status open
+bun scripts/memory.ts resolve-loop "The dashboard issue is fixed now"
+```
 
 **Hybrid Search (semantic + exact + graph boost):**
 ```bash
@@ -626,14 +636,16 @@ Features:
 
 ## Memory Gate (Always-On Context Injection)
 
-The memory gate (`scripts/memory-gate.ts`) uses a local Ollama model to classify incoming messages and decide whether memory context should be injected. This enables always-on memory without injecting into every message.
+The memory gate (`scripts/memory-gate.ts`) uses a local Ollama model to classify incoming messages and decide whether memory context should be injected. It now prioritizes likely continuation-style turns first, using blended continuation recall before falling back to the standard memory search path.
 
 ### How it works
 
 1. User sends a message
-2. Gate model (qwen2.5:1.5b) classifies: does this message need stored memory?
-3. If no: message passes through with zero overhead
-4. If yes: gate extracts keywords, runs hybrid search, injects results as context
+2. Continuation detector checks for likely follow-on work
+3. If continuation-like: blended recall searches facts + episodes + open loops from the last 14 days
+4. Otherwise the gate model (qwen2.5:1.5b) classifies whether stored memory is needed
+5. If no: message passes through with zero overhead
+6. If yes: gate extracts keywords, runs hybrid search, injects results as context
 
 ### Usage
 

@@ -5,23 +5,22 @@
 -- Main facts table
 CREATE TABLE IF NOT EXISTS facts (
   id TEXT PRIMARY KEY,
-  persona TEXT NOT NULL DEFAULT 'shared',    -- 'shared' or persona name
-  entity TEXT NOT NULL,                       -- 'user', 'project', 'decision', etc.
-  key TEXT,                                   -- attribute name
-  value TEXT NOT NULL,                        -- the fact itself
-  text TEXT,                                  -- full context for FTS
-  category TEXT DEFAULT 'fact',               -- 'preference', 'fact', 'decision', 'convention'
-  decay_class TEXT DEFAULT 'stable',          -- 'permanent', 'stable', 'active', 'session', 'checkpoint'
-  importance REAL DEFAULT 1.0,                -- 0.0 to 1.0
-  source TEXT,                                -- where this came from
-  created_at INTEGER NOT NULL,                -- unix timestamp ms
-  expires_at INTEGER,                         -- unix timestamp seconds, NULL = never
-  last_accessed INTEGER,                      -- unix timestamp seconds
-  confidence REAL DEFAULT 1.0,                -- 0.0 to 1.0, decays over time
-  metadata TEXT                               -- JSON for extra fields
+  persona TEXT NOT NULL DEFAULT 'shared',
+  entity TEXT NOT NULL,
+  key TEXT,
+  value TEXT NOT NULL,
+  text TEXT,
+  category TEXT DEFAULT 'fact',
+  decay_class TEXT DEFAULT 'stable',
+  importance REAL DEFAULT 1.0,
+  source TEXT,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER,
+  last_accessed INTEGER,
+  confidence REAL DEFAULT 1.0,
+  metadata TEXT
 );
 
--- FTS5 virtual table for text search
 CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
   text,
   entity,
@@ -32,7 +31,6 @@ CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
   content_rowid='rowid'
 );
 
--- Triggers to keep FTS5 in sync
 CREATE TRIGGER IF NOT EXISTS facts_ai AFTER INSERT ON facts BEGIN
   INSERT INTO facts_fts(rowid, text, entity, key, value, category)
   VALUES (new.rowid, new.text, new.entity, new.key, new.value, new.category);
@@ -50,7 +48,6 @@ CREATE TRIGGER IF NOT EXISTS facts_au AFTER UPDATE ON facts BEGIN
   VALUES (new.rowid, new.text, new.entity, new.key, new.value, new.category);
 END;
 
--- Indexes for common queries
 CREATE INDEX IF NOT EXISTS idx_facts_persona ON facts(persona);
 CREATE INDEX IF NOT EXISTS idx_facts_entity ON facts(entity);
 CREATE INDEX IF NOT EXISTS idx_facts_category ON facts(category);
@@ -59,20 +56,18 @@ CREATE INDEX IF NOT EXISTS idx_facts_expires ON facts(expires_at) WHERE expires_
 CREATE INDEX IF NOT EXISTS idx_facts_created ON facts(created_at);
 CREATE INDEX IF NOT EXISTS idx_facts_lookup ON facts(entity, key);
 
--- TTL defaults table (in seconds)
 CREATE TABLE IF NOT EXISTS ttl_defaults (
   decay_class TEXT PRIMARY KEY,
-  ttl_seconds INTEGER  -- NULL means never expires
+  ttl_seconds INTEGER
 );
 
 INSERT OR IGNORE INTO ttl_defaults VALUES
   ('permanent', NULL),
-  ('stable', 7776000),      -- 90 days
-  ('active', 1209600),      -- 14 days
-  ('session', 86400),       -- 24 hours
-  ('checkpoint', 14400);    -- 4 hours
+  ('stable', 7776000),
+  ('active', 1209600),
+  ('session', 86400),
+  ('checkpoint', 14400);
 
--- Associative links between facts (graph intelligence)
 CREATE TABLE IF NOT EXISTS fact_links (
   source_id TEXT NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
   target_id TEXT NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
@@ -85,7 +80,13 @@ CREATE TABLE IF NOT EXISTS fact_links (
 CREATE INDEX IF NOT EXISTS idx_fact_links_source ON fact_links(source_id);
 CREATE INDEX IF NOT EXISTS idx_fact_links_target ON fact_links(target_id);
 
--- Auto-capture history log
+CREATE TABLE IF NOT EXISTS fact_embeddings (
+  fact_id TEXT PRIMARY KEY REFERENCES facts(id) ON DELETE CASCADE,
+  embedding BLOB NOT NULL,
+  model TEXT DEFAULT 'nomic-embed-text',
+  created_at INTEGER DEFAULT (strftime('%s', 'now'))
+);
+
 CREATE TABLE IF NOT EXISTS capture_log (
   id TEXT PRIMARY KEY,
   source TEXT NOT NULL,
@@ -96,4 +97,85 @@ CREATE TABLE IF NOT EXISTS capture_log (
   model TEXT,
   duration_ms INTEGER,
   created_at INTEGER DEFAULT (strftime('%s', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_capture_log_hash ON capture_log(transcript_hash);
+
+CREATE TABLE IF NOT EXISTS episodes (
+  id TEXT PRIMARY KEY,
+  summary TEXT NOT NULL,
+  outcome TEXT NOT NULL CHECK(outcome IN ('success','failure','resolved','ongoing')),
+  happened_at INTEGER NOT NULL,
+  duration_ms INTEGER,
+  procedure_id TEXT REFERENCES procedures(id),
+  metadata TEXT,
+  created_at INTEGER DEFAULT (strftime('%s','now'))
+);
+
+CREATE TABLE IF NOT EXISTS episode_entities (
+  episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+  entity TEXT NOT NULL,
+  PRIMARY KEY (episode_id, entity)
+);
+
+CREATE INDEX IF NOT EXISTS idx_episodes_outcome ON episodes(outcome);
+CREATE INDEX IF NOT EXISTS idx_episodes_happened ON episodes(happened_at);
+CREATE INDEX IF NOT EXISTS idx_episode_entities_entity ON episode_entities(entity);
+
+CREATE TABLE IF NOT EXISTS procedures (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  steps TEXT NOT NULL,
+  success_count INTEGER DEFAULT 0,
+  failure_count INTEGER DEFAULT 0,
+  evolved_from TEXT REFERENCES procedures(id),
+  created_at INTEGER DEFAULT (strftime('%s','now'))
+);
+
+CREATE TABLE IF NOT EXISTS procedure_episodes (
+  procedure_id TEXT NOT NULL REFERENCES procedures(id) ON DELETE CASCADE,
+  episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+  PRIMARY KEY (procedure_id, episode_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_procedures_name ON procedures(name);
+
+CREATE TABLE IF NOT EXISTS episode_documents (
+  episode_id TEXT PRIMARY KEY REFERENCES episodes(id) ON DELETE CASCADE,
+  text TEXT NOT NULL,
+  updated_at INTEGER DEFAULT (strftime('%s','now'))
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS episode_documents_fts USING fts5(
+  episode_id UNINDEXED,
+  text
+);
+
+CREATE TABLE IF NOT EXISTS open_loops (
+  id TEXT PRIMARY KEY,
+  persona TEXT NOT NULL DEFAULT 'shared',
+  title TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'task' CHECK(kind IN ('task','bug','incident','approval','commitment','other')),
+  status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','resolved','stale','superseded')),
+  priority REAL DEFAULT 0.6,
+  entity TEXT,
+  source TEXT,
+  related_episode_id TEXT REFERENCES episodes(id) ON DELETE SET NULL,
+  fingerprint TEXT NOT NULL,
+  metadata TEXT,
+  created_at INTEGER DEFAULT (strftime('%s','now')),
+  updated_at INTEGER DEFAULT (strftime('%s','now')),
+  resolved_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_open_loops_status_updated ON open_loops(status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_open_loops_entity ON open_loops(entity);
+CREATE INDEX IF NOT EXISTS idx_open_loops_persona ON open_loops(persona);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_open_loops_active_fingerprint ON open_loops(fingerprint, status);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS open_loops_fts USING fts5(
+  loop_id UNINDEXED,
+  text
 );

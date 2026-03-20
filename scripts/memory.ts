@@ -22,6 +22,16 @@ import { randomUUID, createHash } from "crypto";
 import { join } from "path";
 import { readFileSync } from "fs";
 import { computeGraphBoost, findGraphNeighbors } from "./graph-boost";
+import {
+  createEpisodeRecord,
+  detectContinuation,
+  ensureContinuationSchema,
+  renderContinuationContext,
+  resolveMatchingOpenLoops,
+  searchEpisodesForContinuation,
+  searchOpenLoopsForContinuation,
+  upsertOpenLoop,
+} from "./continuation";
 
 // --- Configuration ---
 const DB_PATH = process.env.ZO_MEMORY_DB || "/home/workspace/.zo/memory/shared-facts.db";
@@ -111,7 +121,6 @@ async function initDb(): Promise<Database> {
   db = new Database(DB_PATH);
   db.exec("PRAGMA journal_mode = WAL");
   
-  // Ensure v2 schema (add embeddings table)
   db.exec(`
     CREATE TABLE IF NOT EXISTS fact_embeddings (
       fact_id TEXT PRIMARY KEY REFERENCES facts(id) ON DELETE CASCADE,
@@ -119,33 +128,77 @@ async function initDb(): Promise<Database> {
       model TEXT DEFAULT '${EMBEDDING_MODEL}',
       created_at INTEGER DEFAULT (strftime('%s', 'now'))
     );
-    
+
     CREATE INDEX IF NOT EXISTS idx_facts_entity_key ON facts(entity, key);
     CREATE INDEX IF NOT EXISTS idx_facts_decay ON facts(decay_class, expires_at);
+
+    CREATE TABLE IF NOT EXISTS episodes (
+      id TEXT PRIMARY KEY,
+      summary TEXT NOT NULL,
+      outcome TEXT NOT NULL CHECK(outcome IN ('success','failure','resolved','ongoing')),
+      happened_at INTEGER NOT NULL,
+      duration_ms INTEGER,
+      procedure_id TEXT REFERENCES procedures(id),
+      metadata TEXT,
+      created_at INTEGER DEFAULT (strftime('%s','now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS episode_entities (
+      episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+      entity TEXT NOT NULL,
+      PRIMARY KEY (episode_id, entity)
+    );
+
+    CREATE TABLE IF NOT EXISTS procedures (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      version INTEGER NOT NULL DEFAULT 1,
+      steps TEXT NOT NULL,
+      success_count INTEGER DEFAULT 0,
+      failure_count INTEGER DEFAULT 0,
+      evolved_from TEXT REFERENCES procedures(id),
+      created_at INTEGER DEFAULT (strftime('%s','now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS procedure_episodes (
+      procedure_id TEXT NOT NULL REFERENCES procedures(id) ON DELETE CASCADE,
+      episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+      PRIMARY KEY (procedure_id, episode_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_episodes_outcome ON episodes(outcome);
+    CREATE INDEX IF NOT EXISTS idx_episodes_happened ON episodes(happened_at);
+    CREATE INDEX IF NOT EXISTS idx_episode_entities_entity ON episode_entities(entity);
+    CREATE INDEX IF NOT EXISTS idx_procedures_name ON procedures(name);
   `);
+
+  ensureContinuationSchema(db);
   
   dbInitialized = true;
   return db;
 }
 
-// --- Database Migration ---
 async function runMigration(): Promise<void> {
   const db = await initDb();
-  const sqlPath = join(import.meta.dir, "migrate-v2.sql");
   
   try {
-    const sql = readFileSync(sqlPath, "utf-8");
-    db.exec(sql);
+    const sqlV2 = readFileSync(join(import.meta.dir, "migrate-v2.sql"), "utf-8");
+    db.exec(sqlV2);
+
+    const v3Path = join(import.meta.dir, "migrate-v3.sql");
+    try {
+      const sqlV3 = readFileSync(v3Path, "utf-8");
+      db.exec(sqlV3);
+    } catch {
+    }
     
-    // Verify tables exist
     const tables = db.prepare(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('episodes','episode_entities','procedures','procedure_episodes') ORDER BY name"
+      "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('episodes','episode_entities','procedures','procedure_episodes','episode_documents','open_loops') ORDER BY name"
     ).all() as Array<{ name: string }>;
     
     console.log("Migration complete.");
     console.log(`  Tables created/verified: ${tables.map(t => t.name).join(", ")}`);
     
-    // Show existing data is intact
     const factCount = db.prepare("SELECT COUNT(*) as cnt FROM facts").get() as { cnt: number };
     const embCount = db.prepare("SELECT COUNT(*) as cnt FROM fact_embeddings").get() as { cnt: number };
     console.log(`  Existing facts: ${factCount.cnt}`);
@@ -279,10 +332,10 @@ async function storeWithEmbedding(entry: Omit<MemoryEntry, "id" | "createdAt" | 
 // --- Hybrid Search ---
 async function hybridSearch(
   query: string,
-  options: { persona?: string; limit?: number; useHyde?: boolean } = {}
+  options: { persona?: string; limit?: number; useHyde?: boolean; useGraph?: boolean } = {}
 ): Promise<Array<{ entry: MemoryEntry; score: number; sources: string[] }>> {
   const db = await initDb();
-  const { persona, limit = 10, useHyde = true } = options;
+  const { persona, limit = 10, useHyde = true, useGraph = true } = options;
   const nowSec = Math.floor(Date.now() / 1000);
 
   // PARALLEL: Run FTS for original query + HyDE + embedding simultaneously
@@ -446,6 +499,17 @@ async function hybridSearch(
     });
   }
 
+  // When --no-graph is set, skip graph boost and neighbor injection
+  if (!useGraph) {
+    const finalResults: Array<{ entry: MemoryEntry; score: number; sources: string[] }> = preBoosted.map(r => ({
+      entry: (r as any).entry,
+      score: r.rrfScore * 0.7 + r.freshness * 0.2 + r.confidence * 0.1,
+      sources: r.sources,
+    }));
+    finalResults.sort((a, b) => b.score - a.score);
+    return finalResults.slice(0, limit);
+  }
+
   // Apply graph boost (reweights composite scores when links exist)
   const boosted = computeGraphBoost(db, preBoosted);
 
@@ -574,32 +638,98 @@ async function backfillEmbeddings(batchSize: number = 50): Promise<{ processed: 
 // --- Episode Storage ---
 async function createEpisode(episode: Omit<Episode, "id" | "createdAt">): Promise<Episode> {
   const db = await initDb();
-  const id = randomUUID();
+  const id = createEpisodeRecord(db, {
+    summary: episode.summary,
+    outcome: episode.outcome,
+    happenedAt: episode.happenedAt,
+    durationMs: episode.durationMs,
+    procedureId: episode.procedureId,
+    entities: episode.entities,
+    metadata: episode.metadata,
+  });
   const nowSec = Math.floor(Date.now() / 1000);
-  
-  db.prepare(`
-    INSERT INTO episodes (id, summary, outcome, happened_at, duration_ms, procedure_id, metadata, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    id,
-    episode.summary,
-    episode.outcome,
-    episode.happenedAt,
-    episode.durationMs || null,
-    episode.procedureId || null,
-    episode.metadata ? JSON.stringify(episode.metadata) : null,
-    nowSec
-  );
-  
-  // Insert entity links
-  const insertEntity = db.prepare(
-    "INSERT OR IGNORE INTO episode_entities (episode_id, entity) VALUES (?, ?)"
-  );
-  for (const entity of episode.entities) {
-    insertEntity.run(id, entity);
-  }
-  
   return { ...episode, id, createdAt: nowSec };
+}
+
+async function continuationSearch(
+  query: string,
+  options: { persona?: string; limit?: number; windowDays?: number; useHyde?: boolean } = {}
+): Promise<{ items: Array<{ kind: string; score: number; summary: string; title: string }>; context: string; detection: ReturnType<typeof detectContinuation> }> {
+  const db = await initDb();
+  const limit = options.limit || 6;
+  const windowDays = options.windowDays || 14;
+  const detection = detectContinuation(query);
+
+  const factResults = await hybridSearch(query, {
+    persona: options.persona,
+    limit,
+    useHyde: options.useHyde ?? false,
+  });
+
+  const queryTokens = detection.keywords.length > 0
+    ? detection.keywords
+    : Array.from(new Set(
+        query
+          .toLowerCase()
+          .replace(/[^a-z0-9_./-]+/g, " ")
+          .split(/\s+/)
+          .map((s) => s.trim())
+          .filter((s) => s.length >= 3)
+      ));
+
+  const factItems = factResults
+    .map(({ entry, score }) => {
+      if (
+        entry.entity.startsWith("chatgpt.") ||
+        entry.entity.startsWith("obsidian.") ||
+        entry.entity.startsWith("markdown.")
+      ) return null;
+      const haystack = `${entry.entity} ${entry.key || ""} ${entry.value} ${entry.text || ""}`.toLowerCase();
+      const overlap = queryTokens.filter((token) => haystack.includes(token)).length;
+      const minOverlap = queryTokens.length >= 3 ? 2 : 1;
+      if (overlap < minOverlap) return null;
+      const recencyBase = Math.max(entry.lastAccessed || 0, Math.floor(entry.createdAt / 1000) || 0);
+      const recency = recencyBase > 0 ? Math.max(0, 1 - ((Date.now() / 1000 - recencyBase) / (windowDays * 86400))) : 0;
+      const isWindowEligible = recency > 0 || entry.decayClass === "active" || entry.decayClass === "session";
+      if (!isWindowEligible) return null;
+      const adjustedScore = score * 0.6 + Math.min(1, overlap / Math.max(1, queryTokens.length)) * 0.3 + recency * 0.1;
+      return {
+        kind: "fact",
+        score: adjustedScore,
+        title: `${entry.entity}.${entry.key || "_"}`,
+        summary: `${entry.entity}.${entry.key || "_"} = ${entry.value}`,
+      };
+    })
+    .filter((item): item is { kind: string; score: number; title: string; summary: string } => Boolean(item));
+
+  const episodeItems = searchEpisodesForContinuation(db, query, { limit, windowDays })
+    .map((item) => ({ kind: item.kind, score: item.score, title: item.title, summary: item.summary }));
+
+  const openLoopItems = searchOpenLoopsForContinuation(db, query, {
+    limit,
+    persona: options.persona,
+    includeResolved: false,
+  }).map((item) => ({ kind: item.kind, score: item.score, title: item.title, summary: item.summary }));
+
+  const combined = [...factItems, ...episodeItems, ...openLoopItems]
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+
+  const context = combined.length === 0
+    ? ""
+    : renderContinuationContext(
+        combined.map((item, idx) => ({
+          kind: item.kind as "fact" | "episode" | "open_loop",
+          id: `${item.kind}-${idx}`,
+          title: item.title,
+          summary: item.summary,
+          score: item.score,
+          source: item.kind,
+        })),
+        limit
+      );
+
+  return { items: combined, context, detection };
 }
 
 // --- Temporal Query Helpers ---
@@ -946,6 +1076,16 @@ async function stats(): Promise<void> {
     const procCount = db.prepare("SELECT COUNT(*) as cnt FROM procedures").get() as { cnt: number };
     console.log(`  Procedures: ${procCount.cnt}`);
   }
+
+  const hasOpenLoops = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='open_loops'"
+  ).get();
+
+  if (hasOpenLoops) {
+    const openLoopCount = db.prepare("SELECT COUNT(*) as cnt FROM open_loops WHERE status IN ('open','stale')").get() as { cnt: number };
+    const resolvedLoopCount = db.prepare("SELECT COUNT(*) as cnt FROM open_loops WHERE status = 'resolved'").get() as { cnt: number };
+    console.log(`  Open loops: ${openLoopCount.cnt} open/stale, ${resolvedLoopCount.cnt} resolved`);
+  }
   
   if (!hasEpisodes && !hasProcedures) {
     console.log("  (Run 'bun memory.ts migrate' to enable episodic + procedural memory)");
@@ -961,9 +1101,13 @@ Usage:
   bun memory.ts <command> [options]
 
 Commands:
+  init      Initialize/verify database schema
   store     Store a new fact with embedding
   search    FTS-only search (v1 compatible)
   hybrid    Hybrid search (FTS + vectors + HyDE)
+  continuation  Blended continuation recall across facts, episodes, and open loops
+  open-loops    List open loops
+  resolve-loop  Resolve matching open loops from text
   index     Backfill embeddings for existing facts
   stats     Show memory statistics
   migrate   Run database migration (adds episodes + procedures tables)
@@ -982,6 +1126,8 @@ Search options:
   --persona <name>     Filter by persona
   --limit <n>          Max results (default: 5/6)
   --no-hyde            Disable HyDE expansion
+  --no-graph           Skip graph boost and neighbor injection
+  --window <days>      Continuation lookback window in days (default: 14)
 
 Episodes options:
   --entity <name>      Filter by entity
@@ -990,44 +1136,19 @@ Episodes options:
   --until <time>       Until: same formats as --since
   --limit <n>          Max results (default: 20)
 
-Trends options:
-  --entity <name>      Entity to track (required)
-  --granularity <g>    day|week|month (default: week)
-  --since <time>       Since when (default: 90 days ago)
-
-Procedures options:
-  --list               List all procedures
-  --show <name>        Show steps for a procedure (latest version)
-  --evolve <name>      Force evolution based on failure data
-  --feedback <id>      Record feedback (use with --success or --failure)
-  --success            Mark feedback as success
-  --failure            Mark feedback as failure
-
-Other commands:
-  mcp                  Start MCP server (stdio transport)
-  profile              Show executor cognitive profile
-  import               Import facts from external sources
-
-Profile options:
-  --executor <id>      Executor ID (e.g., claude-code, gemini)
-
-Import options:
-  --source <type>      Source type: chatgpt|obsidian|markdown
-  --path <file>        Path to source file or directory
-  --dry-run            Preview without storing
+Open loop options:
+  --status <state>     open|resolved|stale|superseded
 
 Examples:
+  bun memory.ts init
+  bun memory.ts continuation "where did we leave off on the dashboard?"
+  bun memory.ts open-loops --status open
+  bun memory.ts resolve-loop "The dashboard issue is fixed now"
   bun memory.ts store --entity "user" --key "name" --value "Alice"
   bun memory.ts hybrid "router password"
   bun memory.ts migrate
   bun memory.ts episodes --entity "swarm.ffb" --since "7 days ago"
-  bun memory.ts episodes --outcome failure
-  bun memory.ts trends --entity "project.ffb-site" --granularity week
   bun memory.ts stats
-  bun memory.ts procedures --list
-  bun memory.ts procedures --show "site-optimization"
-  bun memory.ts procedures --evolve "site-optimization"
-  bun memory.ts procedures --feedback <id> --success
 `);
 }
 
@@ -1049,6 +1170,8 @@ async function main() {
     if (args[i].startsWith("--")) {
       if (args[i] === "--no-hyde") {
         flags.hyde = "false";
+      } else if (args[i] === "--no-graph") {
+        flags.graph = "false";
       } else {
         flags[args[i].slice(2)] = args[i + 1] || "";
         i++;
@@ -1059,6 +1182,12 @@ async function main() {
   }
   
   switch (command) {
+    case "init": {
+      await initDb();
+      console.log(`Initialized: ${DB_PATH}`);
+      break;
+    }
+
     case "store": {
       if (!flags.entity || !flags.value) {
         console.error("Error: --entity and --value are required");
@@ -1108,11 +1237,12 @@ async function main() {
         console.error("Error: search query required");
         process.exit(1);
       }
-      console.log(`Searching: "${query}" ${flags.hyde === "false" ? "(no HyDE)" : "(with HyDE)"}\n`);
+      console.log(`Searching: "${query}" ${flags.hyde === "false" ? "(no HyDE)" : "(with HyDE)"}${flags.graph === "false" ? " (no graph)" : ""}\n`);
       const results = await hybridSearch(query, {
         persona: flags.persona,
         limit: parseInt(flags.limit) || 6,
         useHyde: flags.hyde !== "false",
+        useGraph: flags.graph !== "false",
       });
       console.log(`Found ${results.length} results:\n`);
       for (const { entry, score, sources } of results) {
@@ -1123,6 +1253,67 @@ async function main() {
       break;
     }
     
+    case "continuation": {
+      const query = positional[0];
+      if (!query) {
+        console.error("Error: continuation query required");
+        process.exit(1);
+      }
+      const result = await continuationSearch(query, {
+        persona: flags.persona,
+        limit: parseInt(flags.limit) || 6,
+        windowDays: parseInt(flags.window) || 14,
+        useHyde: flags.hyde !== "false",
+      });
+      console.log(`[Continuation Detection] score=${result.detection.score} reason=${result.detection.reason}`);
+      if (!result.context || result.items.length === 0) {
+        console.log("No continuation context found.");
+        break;
+      }
+      console.log(result.context);
+      console.log();
+      for (const item of result.items) {
+        console.log(`- [${item.kind}] ${item.title}`);
+        console.log(`    score: ${item.score.toFixed(3)}`);
+        console.log(`    ${item.summary}`);
+      }
+      break;
+    }
+
+    case "open-loops": {
+      const db = await initDb();
+      const status = flags.status || "open";
+      const rows = db.prepare(`
+        SELECT * FROM open_loops
+        WHERE status = ?
+        ORDER BY updated_at DESC
+        LIMIT ?
+      `).all(status, parseInt(flags.limit) || 20) as Array<Record<string, unknown>>;
+      if (rows.length === 0) {
+        console.log("No open loops found.");
+        break;
+      }
+      console.log(`Found ${rows.length} open loops:\n`);
+      for (const row of rows) {
+        console.log(`- [${row.status}] ${row.title}`);
+        console.log(`    kind=${row.kind} priority=${Number(row.priority || 0).toFixed(2)} entity=${row.entity || "-"}`);
+        console.log(`    ${row.summary}`);
+      }
+      break;
+    }
+
+    case "resolve-loop": {
+      const text = positional[0];
+      if (!text) {
+        console.error("Error: resolve-loop text required");
+        process.exit(1);
+      }
+      const db = await initDb();
+      const resolved = resolveMatchingOpenLoops(db, text);
+      console.log(`Resolved ${resolved} open loops.`);
+      break;
+    }
+
     case "index": {
       console.log("Backfilling embeddings...");
       const batch = parseInt(flags.batch) || 50;
