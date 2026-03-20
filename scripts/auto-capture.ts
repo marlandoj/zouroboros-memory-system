@@ -23,6 +23,7 @@ import {
   resolveMatchingOpenLoops,
   upsertOpenLoop,
 } from "./continuation";
+import { extractWikilinks, resolveWikilinkTargets } from "./wikilink-utils";
 
 // --- Configuration ---
 const DB_PATH = process.env.ZO_MEMORY_DB || "/home/workspace/.zo/memory/shared-facts.db";
@@ -125,6 +126,7 @@ Rules:
 - Assign confidence: 1.0 for explicit statements, 0.8 for strong implications, 0.6 for inferences
 - Include source_quote: the exact text from the transcript that supports this fact
 - entity format: "category.subject" (e.g., "project.ffb-site", "user", "decision.hosting", "system.ollama")
+- WIKILINKS: Annotate entity references in the "value" field using [[entity]] syntax. This creates graph edges in the knowledge base. Use [[category.subject]] for known entities and [[new.entity]] for new ones. Example: "Switched [[project.ffb]] hosting from Vercel to [[service.aws-s3]]"
 
 Output ONLY a valid JSON array of objects with these fields: entity, key, value, category, decay_class, confidence, source_quote
 If nothing worth extracting, return [].
@@ -347,6 +349,21 @@ async function runCapture(
         .run(id, contradicts);
       db.prepare("UPDATE facts SET confidence = confidence * 0.5 WHERE id = ?").run(contradicts);
       contradictions++;
+    }
+
+    // Parse wikilinks from value and create graph edges
+    const wikilinks = extractWikilinks(fact.value);
+    if (wikilinks.length > 0) {
+      const resolved = resolveWikilinkTargets(db, wikilinks, {
+        sourcePersona: options.persona,
+        sourceId: id,
+      });
+      for (const link of resolved) {
+        db.prepare(
+          "INSERT OR IGNORE INTO fact_links (source_id, target_id, relation, weight) VALUES (?, ?, 'wikilink', 1.0)"
+        ).run(id, link.targetId);
+        linksCreated++;
+      }
     }
 
     storedIds.push(id);
