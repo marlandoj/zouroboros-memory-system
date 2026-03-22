@@ -341,6 +341,7 @@ async function storeWithEmbedding(entry: Omit<MemoryEntry, "id" | "createdAt" | 
     createdAt: now,
     expiresAt,
     lastAccessed: nowSec,
+    embedding: embedding ?? undefined,
   };
 }
 
