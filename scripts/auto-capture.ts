@@ -24,6 +24,7 @@ import {
   upsertOpenLoop,
 } from "./continuation";
 import { extractWikilinks, resolveWikilinkTargets, autoCorrectWikilinks, shouldExcludeFromWrapping, ENTITY_LIKE_PATTERN } from "./wikilink-utils";
+import { extractWikilinks, resolveWikilinkTargets } from "./wikilink-utils";
 
 // --- Configuration ---
 const DB_PATH = process.env.ZO_MEMORY_DB || "/home/workspace/.zo/memory/shared-facts.db";

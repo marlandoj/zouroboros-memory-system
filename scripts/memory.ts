@@ -366,6 +366,7 @@ async function storeWithEmbedding(
     createdAt: now,
     expiresAt,
     lastAccessed: nowSec,
+    embedding: embedding ?? undefined,
   };
 }
 
@@ -1492,7 +1493,9 @@ async function main() {
         console.log(`Created episode: ${ep.id}`);
         console.log(`  outcome: ${ep.outcome}`);
         console.log(`  summary: ${ep.summary}`);
-        if (entities.length > 0) console.log(`  entities: ${entities.join(", ")}`);
+        if (entities.length > 0) {
+          console.log(`  entities: ${entities.join(", ")}`);
+        }
         break;
       }
       const episodes = await findEpisodes({
