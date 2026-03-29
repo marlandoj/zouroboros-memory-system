@@ -1,15 +1,17 @@
 ---
 name: zo-memory-system
-description: Hybrid SQLite + Vector persona memory system for Zo Computer. Episodic memory with temporal queries, graph-boosted search, BFS path finding, knowledge gap analysis, auto-capture pipeline. Gives personas persistent memory with semantic search (nomic-embed-text), HyDE query expansion (qwen2.5:1.5b), Ollama-powered memory gate, 5-tier decay, and swarm integration. Requires Ollama for embeddings.
+description: Hybrid SQLite + Vector persona memory system for Zo Computer. Episodic memory with temporal queries, graph-boosted search, BFS path finding, knowledge gap analysis, auto-capture pipeline. Gives personas persistent memory with semantic search (nomic-embed-text), HyDE query expansion (qwen2.5:1.5b), Ollama-powered memory gate, 5-tier decay, swarm integration, context budget tracking, cross-persona sharing, conflict resolution, and multi-hop retrieval. Requires Ollama for embeddings.
 compatibility: Created for Zo Computer. Requires Bun and Ollama.
 metadata:
   author: marlandoj.zo.computer
-  updated: 2026-03-07
-  version: 3.3.1
+  updated: 2026-03-29
+  version: 4.0.0
 ---
-# Zo Memory System Skill v3.3.1
+# Zo Memory System Skill v4.0.0
 
 Give your Zo personas persistent memory with semantic understanding, graph intelligence, and automatic fact capture.
+
+**v4.0 Updates (Q2-Q4 2026):** Context budget awareness (token tracking + proactive checkpointing), recursive episode summarization (Ollama-powered FIFO compression), metrics dashboard (latency/recall/capture/gate stats), iterative multi-hop retrieval (confidence-based BFS with query refinement), cross-persona memory sharing (pools + inheritance hierarchy), conflict resolution (semantic/temporal detection + provenance tracking), enhanced knowledge graph (typed relations, cycle detection, DOT export, co-occurrence inference), embedding model benchmarking (3-model comparison + recall measurement).
 
 **v3.2 Updates:** Procedural memory (versioned workflow patterns with Ollama-powered evolution), cognitive profiles (executor failure patterns + entity affinities), orchestrator integration (6-signal composite routing with procedure + temporal scoring, auto-episode creation after swarm runs)
 
@@ -789,6 +791,7 @@ bun scripts/test-capture.ts
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 4.0.0 | 2026-03-29 | Context budget awareness (token tracking + proactive checkpointing), recursive episode summarization (Ollama-powered FIFO compression), metrics dashboard (latency/recall/capture/gate stats), iterative multi-hop retrieval (confidence-based BFS with query refinement), cross-persona memory sharing (pools + inheritance hierarchy), conflict resolution (semantic/temporal detection + provenance tracking), enhanced knowledge graph (typed relations, cycle detection, DOT export, co-occurrence inference), embedding model benchmarking (3-model comparison + recall measurement). |
 | 3.3.1 | 2026-03-07 | HTTP MCP server (`mcp-server-http.ts`) — Streamable HTTP transport via Bun.serve(), registered as Zo hosted service (`svc_PXkgBzRdH8M`), HTTPS at `zo-memory-mcp-marlandoj.zocomputer.io`, configured in Claude Code / Gemini / Codex / workspace .mcp.json, bridge script updated with zo-memory tool permissions |
 | 3.3.0 | 2026-03-07 | Conversation capture (conversation-capture.ts) — scan all workspace artifacts for fact extraction, not just swarm. Scheduled daily agent for automatic capture + maintenance reports. Memory Manager persona with full CLI access. |
 | 3.2.0 | 2026-03-07 | Procedural memory (versioned workflow storage, CRUD, feedback, Ollama evolution), cognitive profiles (episode IDs, failure patterns, entity affinities in executor-history.json), orchestrator v4.5 integration (auto-episode on swarm completion, 6-signal composite routing with procedure + temporal scores), MCP server (5 tools: search, store, episodes, procedures, cognitive_profile), import pipeline (ChatGPT, Obsidian, markdown), enhanced CLI (profile, import, mcp commands) |

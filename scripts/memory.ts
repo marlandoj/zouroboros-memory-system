@@ -1715,6 +1715,20 @@ async function main() {
       break;
     }
 
+    case "metrics": {
+      // Delegate to metrics.ts for MEM-101 dashboard
+      const { execSync } = require("child_process");
+      const metricsPath = join(import.meta.dir, "metrics.ts");
+      const metricsArgs = process.argv.slice(3); // skip "memory.ts metrics"
+      try {
+        execSync(`bun "${metricsPath}" ${metricsArgs.join(" ")}`, { stdio: "inherit" });
+      } catch (e) {
+        console.error(`Metrics command failed: ${e}`);
+        process.exit(1);
+      }
+      break;
+    }
+
     default:
       console.error(`Unknown command: ${command}`);
       printUsage();
