@@ -2,7 +2,7 @@
 
 > Give your Zo Computer personas persistent memory with semantic understanding, a knowledge graph, and automatic fact extraction. All local, no API costs.
 >
-> Part of the [Zouroboros](https://github.com/marlandoj) ecosystem — self-improving AI development tools for Zo Computer.
+> Part of the [Zouroboros](https://github.com/marlandoj/zouroboros) ecosystem — self-improving AI development tools for Zo Computer.
 
 [![Version](https://img.shields.io/badge/version-3.2.0-blue?style=flat-square)](https://github.com/marlandoj/zouroboros-memory-system)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
