@@ -179,3 +179,67 @@ CREATE VIRTUAL TABLE IF NOT EXISTS open_loops_fts USING fts5(
   loop_id UNINDEXED,
   text
 );
+
+-- NotebookLM citation provenance (Adoption 1 — Artem stack)
+-- Each `source_chunks` row is a verbatim slice from a NotebookLM source,
+-- keyed by md5(cited_text[:100]) per Artem's recipe. `fact_citations` links
+-- a synthetic fact_id (qa:{conv}:{turn}) to the chunks that backed the answer.
+CREATE TABLE IF NOT EXISTS source_chunks (
+  chunk_md5      TEXT PRIMARY KEY,
+  source_id      TEXT NOT NULL,
+  source_title   TEXT,
+  cited_text     TEXT NOT NULL,
+  start_char     INTEGER,
+  end_char       INTEGER,
+  chunk_id       TEXT,
+  notebook_id    TEXT NOT NULL,
+  agent_slug     TEXT,
+  first_seen_at  INTEGER NOT NULL,
+  last_seen_at   INTEGER NOT NULL,
+  hit_count      INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_source_chunks_source   ON source_chunks(source_id);
+CREATE INDEX IF NOT EXISTS idx_source_chunks_notebook ON source_chunks(notebook_id);
+CREATE INDEX IF NOT EXISTS idx_source_chunks_agent    ON source_chunks(agent_slug);
+
+CREATE TABLE IF NOT EXISTS fact_citations (
+  fact_id           TEXT NOT NULL,
+  chunk_md5         TEXT NOT NULL REFERENCES source_chunks(chunk_md5) ON DELETE CASCADE,
+  citation_number   INTEGER NOT NULL DEFAULT 0,
+  source_kind       TEXT NOT NULL DEFAULT 'qa' CHECK (source_kind IN ('qa','fact')),
+  conversation_id   TEXT,
+  turn_number       INTEGER,
+  question          TEXT,
+  answer_excerpt    TEXT,
+  created_at        INTEGER NOT NULL,
+  PRIMARY KEY (fact_id, chunk_md5, citation_number)
+);
+CREATE INDEX IF NOT EXISTS idx_fact_citations_chunk ON fact_citations(chunk_md5);
+CREATE INDEX IF NOT EXISTS idx_fact_citations_kind  ON fact_citations(source_kind);
+CREATE INDEX IF NOT EXISTS idx_fact_citations_conv  ON fact_citations(conversation_id, turn_number);
+
+-- Topics-as-hubs (Adoption 4 — Artem stack).
+-- Topics are slug-keyed concept hubs. Each Q&A turn extracts 3-7 topics,
+-- which are UPSERTed and linked to the synthetic fact_id via fact_topics.
+-- Enables queries like "every fact about claude-code" without depending on
+-- substring search.
+CREATE TABLE IF NOT EXISTS topics (
+  id             TEXT PRIMARY KEY,           -- slug (lowercase, hyphenated)
+  display_name   TEXT NOT NULL,              -- canonical display form
+  description    TEXT,                       -- optional one-line summary
+  fact_count     INTEGER NOT NULL DEFAULT 0,
+  first_seen_at  INTEGER NOT NULL,
+  last_seen_at   INTEGER NOT NULL,
+  metadata       TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_topics_last_seen ON topics(last_seen_at DESC);
+
+CREATE TABLE IF NOT EXISTS fact_topics (
+  fact_id     TEXT NOT NULL,
+  topic_id    TEXT NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+  weight      REAL NOT NULL DEFAULT 1.0,
+  created_at  INTEGER NOT NULL,
+  PRIMARY KEY (fact_id, topic_id)
+);
+CREATE INDEX IF NOT EXISTS idx_fact_topics_topic ON fact_topics(topic_id);
+CREATE INDEX IF NOT EXISTS idx_fact_topics_fact  ON fact_topics(fact_id);
