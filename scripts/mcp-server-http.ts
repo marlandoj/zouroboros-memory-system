@@ -25,12 +25,12 @@ import { Database } from "bun:sqlite";
 import { randomUUID } from "crypto";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
+import { embeddings as mcEmbeddings } from "./model-client";
 
 // --- Config ---
 const PORT = parseInt(process.env.PORT || "48400");
 const DB_PATH = process.env.ZO_MEMORY_DB || "/home/workspace/.zo/memory/shared-facts.db";
-const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434";
-const EMBEDDING_MODEL = process.env.ZO_EMBEDDING_MODEL || "nomic-embed-text";
+const EMBEDDING_MODEL = process.env.ZO_EMBEDDING_MODEL || "text-embedding-3-small";
 const HISTORY_PATH = join(process.env.HOME || "/tmp", ".swarm", "executor-history.json");
 const BEARER_TOKEN = process.env.ZO_MEMORY_MCP_TOKEN || "";
 
@@ -49,15 +49,8 @@ function getDb(): Database {
 // --- Embedding helper ---
 async function getEmbedding(text: string): Promise<number[] | null> {
   try {
-    const resp = await fetch(`${OLLAMA_URL}/api/embeddings`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: EMBEDDING_MODEL, prompt: text }),
-      signal: AbortSignal.timeout(30000),
-    });
-    if (!resp.ok) return null;
-    const data = await resp.json();
-    return data.embedding || null;
+    const result = await mcEmbeddings(text, EMBEDDING_MODEL);
+    return result.embedding || null;
   } catch {
     return null;
   }
@@ -339,6 +332,35 @@ function toolMemoryProcedures(args: { name?: string }): string {
   return `Found ${results.length} procedures:\n\n${results.join("\n")}`;
 }
 
+function toolMemoryDelete(args: { id: string }): string {
+  if (!args.id) return JSON.stringify({ error: "id is required" });
+  const db = getDb();
+  db.exec("PRAGMA foreign_keys = ON");
+  const existing = db.prepare("SELECT id FROM facts WHERE id = ?").get(args.id) as Record<string, unknown> | null;
+  if (!existing) return JSON.stringify({ error: `Fact not found: ${args.id}` });
+  db.prepare("DELETE FROM facts WHERE id = ?").run(args.id);
+  return JSON.stringify({ deleted: true, id: args.id });
+}
+
+function toolMemoryPrune(args: { dry_run?: boolean }): string {
+  const db = getDb();
+  const dryRun = args.dry_run ?? false;
+  const nowSec = Math.floor(Date.now() / 1000);
+  const rows = db.prepare(
+    "SELECT id FROM facts WHERE expires_at IS NOT NULL AND expires_at < ?"
+  ).all(nowSec) as Array<{ id: string }>;
+  if (!dryRun && rows.length > 0) {
+    db.exec("PRAGMA foreign_keys = ON");
+    db.prepare("DELETE FROM facts WHERE expires_at IS NOT NULL AND expires_at < ?").run(nowSec);
+  }
+  return JSON.stringify({
+    dry_run: dryRun,
+    pruned: dryRun ? 0 : rows.length,
+    would_delete: dryRun ? rows.length : undefined,
+    ids: dryRun ? rows.slice(0, 20).map(r => r.id) : undefined,
+  });
+}
+
 function toolCognitiveProfile(args: { executor_id: string }): string {
   if (!existsSync(HISTORY_PATH)) return "No executor history found.";
 
@@ -448,6 +470,27 @@ const TOOLS_DEFINITION = [
       required: ["executor_id"],
     },
   },
+  {
+    name: "memory_delete",
+    description: "Delete a specific fact by ID. Cascades to embeddings, links, and activation.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        id: { type: "string", description: "The fact UUID to delete" },
+      },
+      required: ["id"],
+    },
+  },
+  {
+    name: "memory_prune",
+    description: "Garbage-collect expired facts. Returns count of deleted facts.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        dry_run: { type: "boolean", description: "Preview what would be pruned without deleting (default false)" },
+      },
+    },
+  },
 ];
 
 // Per-session transports (stateful: each client gets its own transport+server)
@@ -471,6 +514,8 @@ function createSessionServer(requestedSessionId?: string): { transport: WebStand
         case "memory_episodes": result = toolMemoryEpisodes(args as any); break;
         case "memory_procedures": result = toolMemoryProcedures(args as any); break;
         case "cognitive_profile": result = toolCognitiveProfile(args as any); break;
+        case "memory_delete": result = toolMemoryDelete(args as any); break;
+        case "memory_prune": result = toolMemoryPrune(args as any); break;
         default: result = `Unknown tool: ${name}`;
       }
       return { content: [{ type: "text", text: result }] };
