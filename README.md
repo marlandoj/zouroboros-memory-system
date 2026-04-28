@@ -1,12 +1,8 @@
-> **⚠️ DEPRECATED** — This repository has been archived. All code has been migrated to the [Zouroboros monorepo](https://github.com/marlandoj/Zouroboros) under `packages/memory/`. Please open issues and PRs there.
-
----
-
 # Zouroboros Memory System
 
-> Give your Zo Computer personas persistent memory with semantic understanding, a knowledge graph, and automatic fact extraction. All local, no API costs.
+> Give your Zo Computer personas persistent memory with semantic understanding, a knowledge graph, and automatic fact extraction. Generation defaults route through OpenAI; embeddings remain local by default.
 >
-> Part of the [Zouroboros](https://github.com/marlandoj/zouroboros) ecosystem — self-improving AI development tools for Zo Computer.
+> Part of the [Zouroboros](https://github.com/marlandoj) ecosystem — self-improving AI development tools for Zo Computer.
 
 [![Version](https://img.shields.io/badge/version-3.2.0-blue?style=flat-square)](https://github.com/marlandoj/zouroboros-memory-system)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -24,13 +20,13 @@ This skill gives your AI personas long-term memory that persists across conversa
 - **First-Class Open Loops** -- Stores unfinished tasks, unresolved bugs/incidents, pending approvals, and next-step commitments as queryable records
 - **Searchable Session Summaries** -- Episodes are indexed for continuation retrieval, not just listed by time
 - **Episodic Memory** -- Record "what happened" as events with outcomes, entity tagging, and temporal queries ("since last week", "failures in March")
-- **Procedural Memory** -- Versioned workflow patterns that track success/failure rates and self-evolve using Ollama when failures accumulate
+- **Procedural Memory** -- Versioned workflow patterns that track success/failure rates and self-evolve using the configured generation model when failures accumulate
 - **MCP Server** -- Expose memory as MCP tools (search, store, episodes, procedures, cognitive profiles) for Claude Desktop, Cursor, and other MCP clients
 - **Import Pipeline** -- Import facts from ChatGPT exports, Obsidian vaults, and markdown files with dedup and auto-embedding
-- **Memory Gate** -- A local model that decides whether each message needs stored memory, filtering 40-60% of messages and saving tokens
+- **Memory Gate** -- A routed model workload that decides whether each message needs stored memory, filtering 40-60% of messages and saving tokens
 - **5-Tier Adaptive Decay** -- Facts automatically promote or demote based on how often they're accessed
 - **Swarm Integration** -- Token-optimized memory for multi-agent workflows via [zouroboros-swarm-orchestrator](https://github.com/marlandoj/zouroboros-swarm-orchestrator), with 6-signal composite routing, auto-episode creation, and cognitive profiles
-- **Fully Local** -- Embeddings and query expansion run on Ollama (nomic-embed-text + qwen2.5:1.5b). No external API costs
+- **Default Routing** -- Generation workloads default to OpenAI `gpt-4o-mini`; embeddings remain local on Ollama `nomic-embed-text`
 
 ---
 
@@ -47,7 +43,7 @@ Set up the memory system for my personas.
 Use the zo-memory-system skill.
 ```
 
-Zo will install the database, pull the required Ollama models, and configure everything. You can then say things like:
+Zo will install the database, configure provider routing, and set up local embeddings if desired. You can then say things like:
 
 - *"Remember that our brand voice is concise, confident, and no fluff"*
 - *"What did we decide about the database for the FFB project?"*
@@ -104,23 +100,20 @@ bun scripts/add-persona.sh "ops-manager" "Operations leader"
 
 ## Prerequisites
 
-The memory system uses Ollama for local embeddings and query expansion. No API keys needed.
+The current default routing uses OpenAI for generation workloads and Ollama for local embeddings.
 
 ```bash
-# Install Ollama
-curl -fsSL https://ollama.com/install.sh | sh
+export OPENAI_API_KEY="your_api_key_here"
 
-# Pull required models
-ollama pull nomic-embed-text   # Embeddings (768 dimensions)
-ollama pull qwen2.5:1.5b       # HyDE expansion + memory gate
-ollama pull qwen2.5:7b         # Auto-capture fact extraction (optional)
+# Optional local embeddings
+curl -fsSL https://ollama.com/install.sh | sh
+ollama pull nomic-embed-text
 ```
 
 | Model | Purpose | Size | Required? |
 |-------|---------|------|-----------|
-| nomic-embed-text | Vector embeddings | 274 MB | Yes |
-| qwen2.5:1.5b | HyDE expansion + memory gate | 986 MB | Yes |
-| qwen2.5:7b | Auto-capture extraction | 4.4 GB | Optional |
+| openai:gpt-4o-mini | Gate, HyDE, auto-capture, summaries | API | Yes (default generation path) |
+| ollama:nomic-embed-text | Vector embeddings | 274 MB | Yes for local embeddings |
 
 ---
 
@@ -182,7 +175,7 @@ Quality safeguards: confidence threshold (0.6), minimum value length (10 chars),
 
 ### Memory Gate
 
-The memory gate classifies each incoming message: does it need stored memory? It now checks for continuation-like turns first, using blended recall across facts, episodes, and open loops before falling back to the standard hybrid search path.
+The memory gate uses the configured gate model to classify each incoming message: does it need stored memory? It now checks for continuation-like turns first, using blended recall across facts, episodes, and open loops before falling back to the standard hybrid search path.
 
 ```bash
 bun scripts/memory-gate.ts "what did we decide about pricing?"  # Exit 0: results found
@@ -250,11 +243,11 @@ bun scripts/memory.ts procedures --show "site-review"
 bun scripts/memory.ts procedures --feedback <id> --success
 bun scripts/memory.ts procedures --feedback <id> --failure
 
-# Evolve a procedure using Ollama (analyzes failure episodes, suggests improvements)
+# Evolve a procedure using the configured generation model
 bun scripts/memory.ts procedures --evolve "site-review"
 ```
 
-When a procedure accumulates failures, `--evolve` uses Ollama to analyze linked failure episodes and create a new version with adjusted steps, timeouts, or fallback executors.
+When a procedure accumulates failures, `--evolve` uses the configured generation model (default `openai:gpt-4o-mini`) to analyze linked failure episodes and create a new version with adjusted steps, timeouts, or fallback executors.
 
 ### MCP Server
 
@@ -312,7 +305,7 @@ Supported sources: ChatGPT JSON exports, Obsidian markdown vaults (with frontmat
 | Auto-capture | ~3-5s | Per-conversation extraction |
 | Memory gate (warm) | ~5-7s | Per-message classification |
 | Episode queries | ~10ms | Temporal filtering and trends |
-| Procedure evolution | ~5-10s | Ollama-powered step analysis |
+| Procedure evolution | ~5-10s | Model-routed step analysis |
 
 ---
 
@@ -366,7 +359,7 @@ zouroboros-memory-system/
 ├── README.md                 # This file
 ├── scripts/
 │   ├── memory.ts             # Main CLI (hybrid search, store, episodes, procedures, import, mcp)
-│   ├── memory-gate.ts        # Ollama-powered relevance gate
+│   ├── memory-gate.ts        # Model-routed relevance gate
 │   ├── mcp-server.ts         # MCP server (5 tools, stdio transport)
 │   ├── import.ts             # Import pipeline (ChatGPT, Obsidian, markdown)
 │   ├── auto-capture.ts       # Conversation-to-fact extraction
@@ -390,10 +383,10 @@ Environment variables (all optional, sensible defaults):
 
 ```bash
 export OLLAMA_URL="http://localhost:11434"
-export ZO_EMBEDDING_MODEL="nomic-embed-text"
-export ZO_HYDE_MODEL="qwen2.5:1.5b"
-export ZO_GATE_MODEL="qwen2.5:1.5b"
-export ZO_CAPTURE_MODEL="qwen2.5:7b"
+export ZO_EMBEDDING_MODEL="ollama:nomic-embed-text"
+export ZO_HYDE_MODEL="openai:gpt-4o-mini"
+export ZO_GATE_MODEL="openai:gpt-4o-mini"
+export ZO_CAPTURE_MODEL="openai:gpt-4o-mini"
 export ZO_MEMORY_DB="/path/to/shared-facts.db"
 ```
 

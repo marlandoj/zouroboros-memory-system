@@ -275,6 +275,8 @@ Current scale (~1k facts) doesn't justify complexity. Revisit at 10k+ facts.
 | 2026-03-27 | Reject LLM self-directed operations (MEM-004) | Mismatched with multi-agent architecture |
 | 2026-03-27 | Reject binary working/archival split (MEM-005) | 5-tier decay is more expressive |
 | 2026-03-27 | Defer vector DB migration (MEM-201) | Current scale sufficient with SQLite |
+| 2026-04-07 | Complete model provider migration (MEM-203) | Gate, extraction, summarization, briefing on gpt-4o-mini via model-client.ts; embeddings stay local; ~$0.13/mo cost |
+| 2026-04-07 | Defer RAG expansion unification (MEM-204) | Scripts only use embeddings (already local); cleanup, not quality impact |
 
 ---
 
@@ -295,8 +297,12 @@ Current scale (~1k facts) doesn't justify complexity. Revisit at 10k+ facts.
 8. **✅ MEM-105** Enhanced Knowledge Graph
 9. **✅ MEM-202** Embedding Model Evaluation
 
+### ✅ 2026-04-07 — Model Provider Migration
+10. **✅ MEM-203** Provider Abstraction + gpt-4o-mini Migration
+
 ### Future
 - **⬜ MEM-201** Vector Database Migration (when scale requires)
+- **⬜ MEM-204** RAG Expansion Script Unification — Migrate 5 scripts in `Projects/zouroboros-rag-expansion/scripts/` from hardcoded Ollama calls to `model-client.ts` import (currently embeddings-only, low priority)
 
 ---
 
