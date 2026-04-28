@@ -511,10 +511,47 @@ export function createEpisodeRecord(db: Database, episode: EpisodeRecordInput): 
   return id;
 }
 
+/**
+ * Quality gate: reject conversation fragments that aren't actionable open loops.
+ * Returns true if the title looks like noise (philosophical quotes, extracted fragments).
+ */
+function isOpenLoopNoise(title: string): boolean {
+  const t = title.trim();
+  // Too long to be a real task title (>120 chars = likely a quote/fragment)
+  if (t.length > 120) return true;
+  // Starts with lowercase (real tasks start with a verb or noun)
+  if (/^[a-z]/.test(t) && !/^(npm|git|bun|apt|curl|cd |ls )/.test(t)) return true;
+  // Contains em-dash or ellipsis (literary fragments)
+  if (/[—…]/.test(t)) return true;
+  // Metaphor/philosophy patterns
+  if (/\b(like composing|like an? |as if |metaphor|orchestra|harmonize|soar|mantra)\b/i.test(t)) return true;
+  // Extracted motivational quotes
+  if (/\b(must (outpace|work|fulfill)|it's not enough|peace of mind|not just)\b/i.test(t)) return true;
+  // Questions aren't tasks (unless they start with action verbs)
+  if (t.endsWith("?") && !/^(fix|resolve|update|check|review|debug|add|remove|create|implement|deploy|migrate)/i.test(t)) return true;
+  return false;
+}
+
 export function upsertOpenLoop(db: Database, input: OpenLoopInput): OpenLoopRecord {
   ensureContinuationSchema(db);
   const persona = input.persona || "shared";
   const title = input.title.trim();
+
+  // Quality gate: skip noise before doing any DB work
+  if (isOpenLoopNoise(title)) {
+    return {
+      id: "skipped-noise",
+      persona,
+      title,
+      summary: title,
+      kind: input.kind || "commitment",
+      status: "resolved",
+      priority: 0,
+      entity: "",
+      fingerprint: "",
+    } as OpenLoopRecord;
+  }
+
   const summary = (input.summary || input.title).trim();
   const kind = input.kind || loopKindFromText(`${title} ${summary}`);
   const status = input.status || "open";
@@ -661,7 +698,24 @@ function syncOpenLoopFts(
   db.prepare("INSERT INTO open_loops_fts (loop_id, text) VALUES (?, ?)").run(id, text);
 }
 
+export function shouldSkipExtractionSource(source: string): boolean {
+  if (!source) return false;
+  const basename = source.split("/").pop() ?? source;
+  const lowerBase = basename.toLowerCase();
+  const lowerSrc = source.toLowerCase();
+  const docNames = new Set([
+    "skill.md", "readme.md", "claude.md", "usage.md", "agents.md",
+    "identity.md", "soul.md", "spec.md", "changelog.md",
+    "integration.md", "notes.md",
+  ]);
+  if (docNames.has(lowerBase)) return true;
+  if (/(^|[-_/])(audit|review|report|findings|research|plan|analysis)([-_./]|$)/.test(lowerSrc)) return true;
+  if (/\/(sample-|fixture-)/.test(source) || source.includes("__tests__")) return true;
+  return false;
+}
+
 export function extractOpenLoopsFromText(text: string, source: string): OpenLoopInput[] {
+  if (shouldSkipExtractionSource(source)) return [];
   const chunks = text
     .split(/\n+/)
     .flatMap((line) => line.split(/(?<=[.!?])\s+/))
