@@ -23,6 +23,7 @@ interface InlineOptions {
   message: string;
   context: string;
   source: string;
+  persona: string;
   captureMode: "inline" | "batch";
   dryRun: boolean;
 }
@@ -32,6 +33,7 @@ function parseArgs(): InlineOptions {
   let message = "";
   let context = "";
   let source = "inline:unknown";
+  let persona = "shared";
   let captureMode: "inline" | "batch" = "inline";
   let dryRun = false;
 
@@ -49,6 +51,10 @@ function parseArgs(): InlineOptions {
       case "-s":
         source = args[++i] || source;
         break;
+      case "--persona":
+      case "-p":
+        persona = args[++i] || "shared";
+        break;
       case "--batch":
         captureMode = "batch";
         break;
@@ -58,7 +64,7 @@ function parseArgs(): InlineOptions {
     }
   }
 
-  return { message, context, source, captureMode, dryRun };
+  return { message, context, source, persona, captureMode, dryRun };
 }
 
 async function main() {
@@ -81,6 +87,7 @@ async function main() {
 
   const result = await extractAndStoreFacts(combined, {
     source: opts.source,
+    persona: opts.persona,
     captureMode: opts.captureMode,
     dryRun: opts.dryRun,
   });

@@ -130,7 +130,7 @@ class TestRunner {
       INSERT INTO facts (id, entity, key, value) VALUES (?, ?, ?, ?)
     `).run(id, entity, key, value);
     this.db.prepare(`INSERT INTO facts_fts (rowid, entity, key, value) VALUES (?, ?, ?, ?)`)
-      .run(this.db.prepare("SELECT rowid FROM facts WHERE id = ?").get(id) as { rowid: number }.rowid, entity, key || "", value);
+      .run((this.db.prepare("SELECT rowid FROM facts WHERE id = ?").get(id) as { rowid: number }).rowid, entity, key || "", value);
     return id;
   }
 

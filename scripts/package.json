@@ -1,13 +1,13 @@
 {
   "name": "zo-memory-system",
   "version": "3.2.0",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1"
+  },
   "description": "Hybrid SQLite + Vector persona memory with episodic/procedural memory, cognitive profiles, MCP server, import pipeline, and Ollama-powered evolution for Zo Computer",
-  "type": "module",
   "scripts": {
     "memory": "bun memory.ts",
     "demo": "bun demo.ts"
   },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.27.1"
-  }
+  "type": "module"
 }
