@@ -7,6 +7,9 @@ metadata:
   updated: 2026-03-29
   version: 4.0.0
 ---
+
+> **DEPRECATED:** This standalone skill has been migrated into the [Zouroboros monorepo](https://github.com/marlandoj/zouroboros). The canonical location is now `zouroboros/packages/`. This copy is kept for backwards compatibility but will not receive updates.
+
 # Zo Memory System Skill v4.0.0
 
 Give your Zo personas persistent memory with semantic understanding, graph intelligence, and automatic fact capture.
@@ -814,3 +817,6 @@ bun scripts/test-capture.ts
 
 - `references/graphthulhu-concepts.md` — Design notes on GraphThulhu adaptations
 - `references/supermemory-concepts.md` — Design notes on auto-capture inspiration
+- `references/model-config.md` — Per-workload model routing (`model.env`), provider
+  secrets, and deployment notes for the `memory-gate` service. Read this before
+  changing which model handles gate/briefing/extraction workloads.
