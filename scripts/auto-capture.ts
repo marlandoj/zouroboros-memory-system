@@ -24,14 +24,13 @@ import {
   upsertOpenLoop,
 } from "./continuation";
 import { extractWikilinks, resolveWikilinkTargets, autoCorrectWikilinks, shouldExcludeFromWrapping, ENTITY_LIKE_PATTERN } from "./wikilink-utils";
-import { extractWikilinks, resolveWikilinkTargets } from "./wikilink-utils";
+import { generate as mcGenerate, embeddings as mcEmbeddings, modelHealthCheck, resolveConfiguredModel } from "./model-client";
 
 // --- Configuration ---
 const DB_PATH = process.env.ZO_MEMORY_DB || "/home/workspace/.zo/memory/shared-facts.db";
-const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434";
-const CAPTURE_MODEL = process.env.ZO_CAPTURE_MODEL || "qwen2.5:7b";
-const CAPTURE_FALLBACK_MODEL = "qwen2.5:3b";
-const EMBEDDING_MODEL = process.env.ZO_EMBEDDING_MODEL || "nomic-embed-text";
+const EMBEDDING_MODEL = process.env.ZO_EMBEDDING_MODEL || "text-embedding-3-small";
+const CAPTURE_MODEL = process.env.ZO_CAPTURE_MODEL || "openai:gpt-4o-mini";
+const CAPTURE_FALLBACK_MODEL = process.env.ZO_CAPTURE_FALLBACK_MODEL || process.env.ZO_MODEL_CAPTURE || "openai:gpt-4o-mini";
 const MAX_FACTS_PER_CAPTURE = 20;
 const MIN_CONFIDENCE = 0.6;
 const MIN_VALUE_LENGTH = 10;
@@ -103,20 +102,19 @@ function getDb(): Database {
   return db;
 }
 
-// --- Ollama Integration ---
+// --- Model Integration (via model-client) ---
 
-async function checkModelAvailable(model: string): Promise<boolean> {
+async function checkModelAvailable(_model: string): Promise<boolean> {
   try {
-    const resp = await fetch(`${OLLAMA_URL}/api/tags`, { signal: AbortSignal.timeout(5000) });
-    if (!resp.ok) return false;
-    const data = await resp.json();
-    return data.models?.some((m: any) => m.name === model || m.name.startsWith(model + ":"));
+    const { provider } = resolveConfiguredModel("capture", _model);
+    const result = await modelHealthCheck(provider);
+    return result.available;
   } catch {
     return false;
   }
 }
 
-async function extractFacts(transcript: string, model: string): Promise<CapturedFact[]> {
+async function extractFacts(transcript: string, _model: string): Promise<CapturedFact[]> {
   const prompt = `You are a fact extractor. Given a conversation transcript, extract structured facts.
 
 Rules:
@@ -126,7 +124,7 @@ Rules:
 - Assign decay_class: "permanent" for user preferences/identity, "stable" for project decisions, "active" for current tasks/sprints, "session" for today-only context
 - Assign confidence: 1.0 for explicit statements, 0.8 for strong implications, 0.6 for inferences
 - Include source_quote: the exact text from the transcript that supports this fact
-- entity format: "category.subject" (e.g., "project.ffb-site", "user", "decision.hosting", "system.ollama")
+- entity format: "category.subject" (e.g., "project.ffb-site", "user", "decision.hosting", "system.model-routing")
 - WIKILINKS: Annotate entity references in the "value" field using [[entity]] syntax. This creates graph edges in the knowledge base. Use [[category.subject]] for known entities and [[new.entity]] for new ones. Example: "Switched [[project.ffb]] hosting from Vercel to [[service.aws-s3]]"
 
 Output ONLY a valid JSON array of objects with these fields: entity, key, value, category, decay_class, confidence, source_quote
@@ -138,28 +136,15 @@ ${transcript.slice(0, 6000)}
 ---`;
 
   try {
-    const resp = await fetch(`${OLLAMA_URL}/api/generate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model,
-        prompt,
-        stream: false,
-        options: {
-          temperature: 0.1,
-          num_predict: 2000,
-        },
-        keep_alive: "24h",
-      }),
-      signal: AbortSignal.timeout(60000),
+    const result = await mcGenerate({
+      prompt,
+      workload: "extraction",
+      temperature: 0.1,
+      maxTokens: 2000,
+      json: true,
     });
 
-    if (!resp.ok) throw new Error(`Ollama returned ${resp.status}`);
-
-    const data = await resp.json();
-    const text = data.response?.trim() || "";
-
-    // Parse JSON from response (handle markdown code blocks)
+    const text = result.content.trim();
     let jsonStr = text;
     const jsonMatch = text.match(/\[[\s\S]*\]/);
     if (jsonMatch) jsonStr = jsonMatch[0];
@@ -167,7 +152,6 @@ ${transcript.slice(0, 6000)}
     const parsed = JSON.parse(jsonStr);
     if (!Array.isArray(parsed)) return [];
 
-    // Validate and type-check each fact
     return parsed
       .filter((f: any) => f.entity && f.value && f.key)
       .map((f: any) => ({
@@ -196,22 +180,12 @@ function validateDecay(d: string): DecayClass {
   return valid.includes(d as DecayClass) ? (d as DecayClass) : "stable";
 }
 
-// --- Embedding ---
+// --- Embedding (via model-client) ---
 
 async function getEmbedding(text: string): Promise<number[] | null> {
   try {
-    const resp = await fetch(`${OLLAMA_URL}/api/embeddings`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: EMBEDDING_MODEL,
-        prompt: text.slice(0, 8000),
-      }),
-      signal: AbortSignal.timeout(15000),
-    });
-    if (!resp.ok) return null;
-    const data = await resp.json();
-    return data.embedding;
+    const result = await mcEmbeddings(text.slice(0, 8000));
+    return result.embedding.length > 0 ? result.embedding : null;
   } catch {
     return null;
   }
@@ -531,7 +505,7 @@ Options:
   --source <label>     Source label (e.g., "chat:2026-03-04", "swarm:ffb")
   --persona <name>     Persona to store facts under (default: "shared")
   --dry-run            Show extracted facts without storing
-  --model <name>       Override extraction model (default: qwen2.5:7b)
+  --model <name>       Override extraction model (default: openai:gpt-4o-mini)
 
 Examples:
   bun auto-capture.ts --input conversation.md --dry-run

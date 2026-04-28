@@ -3,7 +3,7 @@
  * streaming-capture.ts — Real-Time Incremental Fact Extraction (Phase 4.3)
  *
  * Buffers text from swarm task outputs and conversation turns, then runs
- * lightweight extraction via qwen2.5:1.5b at threshold. Facts are stored
+ * lightweight extraction via the configured capture workload at threshold. Facts are stored
  * with provisional flag and 0.7x search ranking weight until batch
  * reconciliation promotes or supersedes them.
  *
@@ -15,10 +15,9 @@
 import { Database } from "bun:sqlite";
 import { randomUUID, createHash } from "crypto";
 import { autoCorrectWikilinks } from "./wikilink-utils";
+import { generate as mcGenerate, embeddings as mcEmbeddings } from "./model-client";
 
 const DB_PATH = process.env.ZO_MEMORY_DB || "/home/workspace/.zo/memory/shared-facts.db";
-const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434";
-const GATE_MODEL = process.env.ZO_GATE_MODEL || "qwen2.5:1.5b";
 
 // Buffer thresholds per seed spec
 const TOKEN_THRESHOLD = 2000;
@@ -139,24 +138,20 @@ Respond with ONLY a JSON array:`;
 
   let facts: ProvisionalFact[] = [];
   try {
-    const resp = await Promise.race([
-      fetch(`${OLLAMA_URL}/api/generate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: GATE_MODEL,
-          prompt,
-          stream: false,
-          options: { temperature: 0.1, num_predict: 512 },
-        }),
+    const result = await Promise.race([
+      mcGenerate({
+        prompt,
+        workload: "capture",
+        temperature: 0.1,
+        maxTokens: 512,
+        json: true,
       }),
       new Promise<never>((_, rej) =>
         setTimeout(() => rej(new Error("extraction timeout")), EXTRACTION_TIMEOUT_MS)
       ),
     ]);
 
-    const data = await (resp as Response).json() as { response: string };
-    const jsonMatch = data.response.match(/\[[\s\S]*?\]/);
+    const jsonMatch = result.content.match(/\[[\s\S]*?\]/);
     if (jsonMatch) {
       const parsed = JSON.parse(jsonMatch[0]) as ProvisionalFact[];
       facts = parsed.filter(f =>
