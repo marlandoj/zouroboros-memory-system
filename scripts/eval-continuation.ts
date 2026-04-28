@@ -116,7 +116,7 @@ function setupDb(): Database {
     CREATE TABLE fact_embeddings (
       fact_id TEXT PRIMARY KEY,
       embedding BLOB NOT NULL,
-      model TEXT DEFAULT 'nomic-embed-text',
+      model TEXT DEFAULT 'text-embedding-3-small',
       created_at INTEGER DEFAULT (strftime('%s', 'now'))
     );
     CREATE TABLE procedures (

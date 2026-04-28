@@ -248,13 +248,13 @@ function testCaptureLog() {
   db.prepare(`
     INSERT INTO capture_log (id, source, transcript_hash, facts_extracted, facts_skipped, contradictions, model, duration_ms)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(randomUUID(), "chat:test", hash, 3, 1, 0, "qwen2.5:7b", 4500);
+  `).run(randomUUID(), "chat:test", hash, 3, 1, 0, "openai:gpt-4o-mini", 4500);
 
   const log = db.prepare("SELECT * FROM capture_log WHERE transcript_hash = ?").get(hash) as any;
   assert(log !== null, "Capture log entry created");
   assert(log.facts_extracted === 3, "Facts extracted count correct");
   assert(log.facts_skipped === 1, "Facts skipped count correct");
-  assert(log.model === "qwen2.5:7b", "Model recorded");
+  assert(log.model === "openai:gpt-4o-mini", "Model recorded");
 
   // Test re-processing prevention
   const existing = db.prepare("SELECT id FROM capture_log WHERE transcript_hash = ?").get(hash);

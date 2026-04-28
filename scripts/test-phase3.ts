@@ -76,8 +76,8 @@ class TestRunner {
     const id = randomUUID();
     this.db.prepare(`
       INSERT INTO facts (id, entity, key, value, decay_class, access_count, last_accessed, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, strftime('%s','now') - ?, strftime('%s','now') - ?)
-    `).run(id, entity, key, value, decayClass, accessCount, accessCount * 86400, accessCount * 86400);
+      VALUES (?, ?, ?, ?, ?, ?, strftime('%s','now'), strftime('%s','now') - ?)
+    `).run(id, entity, key, value, decayClass, accessCount, accessCount * 86400);
     return id;
   }
 
@@ -101,6 +101,13 @@ class TestRunner {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  resetDb() {
+    this.db.exec("DELETE FROM fact_links");
+    this.db.exec("DELETE FROM facts");
+    const hasTable = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='unified_activation'").get();
+    if (hasTable) this.db.exec("DELETE FROM unified_activation");
   }
 
   cleanup() {
@@ -273,6 +280,7 @@ async function main() {
   });
 
   // Test 7: Run unified decay for all facts
+  runner.resetDb();
   await runner.runTest("Run unified decay for all facts", () => {
     // Create test facts
     for (let i = 0; i < 10; i++) {
@@ -290,6 +298,7 @@ async function main() {
   });
 
   // Test 8: Get top facts by activation
+  runner.resetDb();
   await runner.runTest("Get top facts by activation", () => {
     // Create facts with different access counts
     const low = runner.createFact("test", "low", "Low", "active", 1);
@@ -411,6 +420,7 @@ async function main() {
   });
 
   // Test 14: Empty graph handling
+  runner.resetDb();
   await runner.runTest("Empty graph returns empty results", () => {
     const { results, stats } = runUnifiedDecay(runner["db"]);
     
