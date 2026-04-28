@@ -83,7 +83,7 @@ CREATE INDEX IF NOT EXISTS idx_fact_links_target ON fact_links(target_id);
 CREATE TABLE IF NOT EXISTS fact_embeddings (
   fact_id TEXT PRIMARY KEY REFERENCES facts(id) ON DELETE CASCADE,
   embedding BLOB NOT NULL,
-  model TEXT DEFAULT 'nomic-embed-text',
+  model TEXT DEFAULT 'text-embedding-3-small',
   created_at INTEGER DEFAULT (strftime('%s', 'now'))
 );
 
