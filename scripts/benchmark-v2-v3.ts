@@ -8,7 +8,7 @@
  *   3. Auto-capture extraction quality
  *
  * Uses a temporary SQLite database with synthetic but realistic facts.
- * Requires Ollama running with nomic-embed-text + qwen2.5:1.5b + qwen2.5:7b
+ * Requires OpenAI for default generation workloads and Ollama for local embeddings.
  *
  * Usage: bun benchmark-v2-v3.ts [--skip-ollama]
  */
@@ -17,14 +17,15 @@ import { Database } from "bun:sqlite";
 import { randomUUID, createHash } from "crypto";
 import { unlinkSync, existsSync, writeFileSync } from "fs";
 import { computeGraphBoost, findGraphNeighbors } from "./graph-boost";
+import { generate, modelHealthCheck } from "./model-client";
 
 // --- Configuration ---
 const TEST_DB_PATH = "/dev/shm/zo-memory-benchmark.db";
 const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434";
 const EMBEDDING_MODEL = "nomic-embed-text";
-const HYDE_MODEL = "qwen2.5:1.5b";
-const GATE_MODEL = "qwen2.5:1.5b";
-const CAPTURE_MODEL = "qwen2.5:7b";
+const HYDE_MODEL = process.env.ZO_HYDE_MODEL || "openai:gpt-4o-mini";
+const GATE_MODEL = process.env.ZO_GATE_MODEL || "openai:gpt-4o-mini";
+const CAPTURE_MODEL = process.env.ZO_CAPTURE_MODEL || "openai:gpt-4o-mini";
 const SKIP_OLLAMA = process.argv.includes("--skip-ollama");
 
 // --- Timing Utility ---
@@ -147,8 +148,8 @@ function seedDatabase(db: Database): SeedFact[] {
     // Memory system cluster (should be linked)
     { id: "", entity: "system.memory", key: "version", value: "Hybrid SQLite plus vector search with nomic-embed-text embeddings", category: "fact", decay: "stable" },
     { id: "", entity: "system.memory", key: "database", value: "SQLite with FTS5 and WAL mode at .zo/memory/shared-facts.db", category: "fact", decay: "permanent" },
-    { id: "", entity: "decision.memory-cli", key: "choice", value: "Use memory-next.ts as canonical CLI, supports store search hybrid index stats", category: "decision", decay: "permanent" },
-    { id: "", entity: "system.memory", key: "gate", value: "Ollama-powered memory gate filters 40-60% of messages saving tokens", category: "fact", decay: "stable" },
+    { id: "", entity: "decision.memory-cli", key: "choice", value: "Use memory.ts as canonical CLI, supports store search hybrid index stats", category: "decision", decay: "permanent" },
+    { id: "", entity: "system.memory", key: "gate", value: "Model-routed memory gate filters 40-60% of messages saving tokens", category: "fact", decay: "stable" },
     // User preferences (isolated/orphan)
     { id: "", entity: "user", key: "name", value: "Jason Marland, based in Phoenix Arizona", category: "preference", decay: "permanent" },
     { id: "", entity: "user", key: "timezone", value: "America/Phoenix, no daylight saving time", category: "preference", decay: "permanent" },
@@ -157,7 +158,7 @@ function seedDatabase(db: Database): SeedFact[] {
     // Infrastructure cluster
     { id: "", entity: "system.zo", key: "backups", value: "Offsite backups via rclone to Google Drive weekly on Sundays", category: "fact", decay: "stable" },
     { id: "", entity: "system.zo", key: "database", value: "MariaDB running locally on 127.0.0.1:3306", category: "fact", decay: "stable" },
-    { id: "", entity: "system.zo", key: "ollama", value: "Ollama running locally with nomic-embed-text qwen2.5:1.5b qwen2.5:7b models", category: "fact", decay: "stable" },
+    { id: "", entity: "system.zo", key: "model-routing", value: "OpenAI handles gate, HyDE, and capture workloads while Ollama hosts local nomic-embed-text embeddings", category: "fact", decay: "stable" },
     // Financial
     { id: "", entity: "portfolio", key: "broker", value: "Alpaca Markets paper trading account for strategy testing", category: "fact", decay: "stable" },
     { id: "", entity: "portfolio", key: "strategy", value: "Dollar cost averaging into VOO and QQQ with 5% single position limit", category: "decision", decay: "stable" },
@@ -258,7 +259,7 @@ async function getEmbedding(text: string): Promise<number[] | null> {
       signal: AbortSignal.timeout(15000),
     });
     if (!resp.ok) return null;
-    const data = await resp.json();
+    const data = await resp.json() as { embedding?: number[] };
     return data.embedding;
   } catch { return null; }
 }
@@ -496,11 +497,6 @@ async function benchmarkMemoryGate(db: Database) {
   console.log("BENCHMARK 2: Memory Gate Filtering Efficiency");
   console.log("=".repeat(60));
 
-  if (SKIP_OLLAMA) {
-    console.log("  Skipped (--skip-ollama)");
-    return;
-  }
-
   const messages = [
     // Should NOT need memory (exit 2)
     { msg: "hello", expect: "skip", label: "Greeting" },
@@ -533,12 +529,10 @@ async function benchmarkMemoryGate(db: Database) {
     const gateTimer = timer();
 
     try {
-      const resp = await fetch(`${OLLAMA_URL}/api/generate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: GATE_MODEL,
-          prompt: `You are a classifier. Given a user message, decide if it would benefit from retrieving stored memory/context from previous conversations.
+      const gateResult = await generate({
+        workload: "gate",
+        model: GATE_MODEL,
+        prompt: `You are a classifier. Given a user message, decide if it would benefit from retrieving stored memory/context from previous conversations.
 
 Answer ONLY with valid JSON, no other text.
 
@@ -549,24 +543,16 @@ Rules:
 - "reason": one short sentence explaining your decision
 
 User: "${msg.replace(/"/g, '\\"')}"`,
-          stream: false,
-          keep_alive: "24h",
-          options: { temperature: 0.1, num_predict: 150 },
-        }),
-        signal: AbortSignal.timeout(30000),
+        json: true,
+        temperature: 0.1,
+        maxTokens: 150,
       });
 
       const gateMs = gateTimer();
       totalGateTime += gateMs;
       gateCallCount++;
 
-      if (!resp.ok) {
-        console.log(`  ✗ Gate failed for "${msg}": ${resp.status}`);
-        continue;
-      }
-
-      const data = await resp.json();
-      const raw = data.response.trim();
+      const raw = gateResult.content.trim();
       const jsonMatch = raw.match(/\{[\s\S]*\}/);
       if (!jsonMatch) {
         console.log(`  ✗ Parse failed for "${msg}": ${raw.slice(0, 50)}`);
@@ -663,11 +649,6 @@ async function benchmarkAutoCapture(db: Database) {
   console.log("BENCHMARK 3: Auto-Capture Extraction Quality");
   console.log("=".repeat(60));
 
-  if (SKIP_OLLAMA) {
-    console.log("  Skipped (--skip-ollama)");
-    return;
-  }
-
   const transcript = `User: Let's discuss the Fauna Flora site migration.
 Assistant: Sure, I'll review the current state. The FFB site is currently hosted on Zo with React and Hono. We migrated from the old static site in January.
 
@@ -687,12 +668,10 @@ Assistant: Great improvement. The main gains came from image optimization, lazy 
   const extractTimer = timer();
 
   try {
-    const resp = await fetch(`${OLLAMA_URL}/api/generate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: CAPTURE_MODEL,
-        prompt: `You are a fact extractor. Given a conversation transcript, extract structured facts.
+    const captureResult = await generate({
+      workload: "capture",
+      model: CAPTURE_MODEL,
+      prompt: `You are a fact extractor. Given a conversation transcript, extract structured facts.
 
 Rules:
 - Extract ONLY concrete, reusable facts (preferences, decisions, project details, technical choices, contacts)
@@ -710,22 +689,13 @@ Transcript:
 ---
 ${transcript}
 ---`,
-        stream: false,
-        options: { temperature: 0.1, num_predict: 2000 },
-        keep_alive: "24h",
-      }),
-      signal: AbortSignal.timeout(60000),
+      json: true,
+      temperature: 0.1,
+      maxTokens: 2000,
     });
 
     const extractMs = extractTimer();
-
-    if (!resp.ok) {
-      console.log(`  ✗ Extraction failed: ${resp.status}`);
-      return;
-    }
-
-    const data = await resp.json();
-    const raw = data.response.trim();
+    const raw = captureResult.content.trim();
     const jsonMatch = raw.match(/\[[\s\S]*\]/);
 
     if (!jsonMatch) {
@@ -843,7 +813,7 @@ async function benchmarkLatency(db: Database) {
   console.log("=".repeat(60));
 
   if (SKIP_OLLAMA) {
-    console.log("  Skipped (--skip-ollama)");
+    console.log("  Skipped (--skip-ollama: embeddings required)");
     return;
   }
 
@@ -959,7 +929,7 @@ function generateMarkdownReport(): string {
   let md = `# zo-memory-system Benchmark: v2.0 vs v3.0\n\n`;
   md += `**Date**: ${timestamp} UTC\n`;
   md += `**Database**: ${results.length > 0 ? "25 synthetic facts, seeded graph links" : "N/A"}\n`;
-  md += `**Ollama Models**: ${SKIP_OLLAMA ? "Skipped" : `${EMBEDDING_MODEL}, ${HYDE_MODEL}, ${CAPTURE_MODEL}`}\n\n`;
+  md += `**Configured Models**: ${SKIP_OLLAMA ? `generation=${GATE_MODEL}/${CAPTURE_MODEL}, embeddings skipped` : `embeddings=${EMBEDDING_MODEL}, generation=${HYDE_MODEL}/${GATE_MODEL}/${CAPTURE_MODEL}`}\n\n`;
 
   const categories = ["graph", "gate", "capture", "search"] as const;
   const labels: Record<string, string> = {
@@ -1011,16 +981,27 @@ async function main() {
   console.log("║  zo-memory-system Benchmark: v2.0 vs v3.0              ║");
   console.log("╚══════════════════════════════════════════════════════════╝");
 
-  // Check Ollama availability
+  const generationHealth = await modelHealthCheck("openai");
+  if (!generationHealth.available) {
+    console.error(`OpenAI not reachable for benchmark generation workloads: ${generationHealth.error ?? "unknown error"}`);
+    process.exit(1);
+  }
+
+  console.log(`\nOpenAI: ✓ (${generationHealth.latency_ms}ms health check)`);
+  console.log(`  ✓ ${HYDE_MODEL}`);
+  console.log(`  ✓ ${GATE_MODEL}`);
+  console.log(`  ✓ ${CAPTURE_MODEL}`);
+
+  // Check Ollama availability for embeddings
   if (!SKIP_OLLAMA) {
     try {
       const resp = await fetch(`${OLLAMA_URL}/api/tags`, { signal: AbortSignal.timeout(5000) });
       if (!resp.ok) throw new Error(`Status ${resp.status}`);
-      const data = await resp.json();
+      const data = await resp.json() as { models?: Array<{ name: string }> };
       const models = data.models?.map((m: any) => m.name) || [];
       console.log(`\nOllama: ✓ (${models.length} models loaded)`);
 
-      const required = [EMBEDDING_MODEL, HYDE_MODEL];
+      const required = [EMBEDDING_MODEL];
       for (const m of required) {
         const found = models.some((name: string) => name === m || name.startsWith(m + ":"));
         console.log(`  ${found ? "✓" : "✗"} ${m}`);
@@ -1029,15 +1010,13 @@ async function main() {
           process.exit(1);
         }
       }
-      const captureFound = models.some((name: string) => name === CAPTURE_MODEL || name.startsWith(CAPTURE_MODEL + ":"));
-      console.log(`  ${captureFound ? "✓" : "○"} ${CAPTURE_MODEL} (optional — for auto-capture benchmark)`);
     } catch (err) {
       console.error(`Ollama not reachable at ${OLLAMA_URL}: ${err}`);
-      console.log("Run with --skip-ollama to skip Ollama-dependent benchmarks.");
+      console.log("Run with --skip-ollama to skip embedding-dependent benchmarks.");
       process.exit(1);
     }
   } else {
-    console.log("\nOllama: Skipped (--skip-ollama flag)");
+    console.log("\nOllama embeddings: Skipped (--skip-ollama flag)");
   }
 
   // Setup

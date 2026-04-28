@@ -16,6 +16,7 @@ import { createHash } from "crypto";
 import { readdir, stat, readFile } from "fs/promises";
 import { join, basename, resolve, relative, dirname } from "path";
 import { parseLinks, type LinkReference } from "./vault-link-parser.ts";
+import { classifyDomain } from "./domain-classifier.ts";
 
 // ── Config ───────────────────────────────────────────────────────────────
 
@@ -313,6 +314,7 @@ async function main() {
   const args = new Set(process.argv.slice(2));
   const fullMode = args.has("--full");
   const dryRun = args.has("--dry-run");
+  const reclassify = args.has("--reclassify");
 
   const startTime = performance.now();
 
@@ -345,6 +347,31 @@ async function main() {
   const pathToId = new Map<string, string>();
   for (const fp of allFiles) {
     pathToId.set(fp, filePathToId(fp));
+  }
+
+  // Purge stale entries: files in vault_files that no longer exist on disk
+  // (or are now under an excluded dir). Catches deletions the indexer
+  // previously had no way to observe.
+  if (!dryRun) {
+    db.exec("CREATE TEMP TABLE IF NOT EXISTS _live_paths (file_path TEXT PRIMARY KEY);");
+    db.exec("DELETE FROM _live_paths;");
+    const insertLive = db.prepare("INSERT OR IGNORE INTO _live_paths (file_path) VALUES (?)");
+    const tx = db.transaction((paths: string[]) => {
+      for (const p of paths) insertLive.run(p);
+    });
+    tx(allFiles);
+
+    const before = (db.query("SELECT COUNT(*) AS n FROM vault_files").get() as { n: number }).n;
+    db.exec(`
+      DELETE FROM vault_links
+       WHERE source_id IN (SELECT id FROM vault_files WHERE file_path NOT IN (SELECT file_path FROM _live_paths))
+          OR target_id IN (SELECT id FROM vault_files WHERE file_path NOT IN (SELECT file_path FROM _live_paths));
+    `);
+    db.exec("DELETE FROM vault_files WHERE file_path NOT IN (SELECT file_path FROM _live_paths);");
+    const removed = before - (db.query("SELECT COUNT(*) AS n FROM vault_files").get() as { n: number }).n;
+    if (removed > 0) {
+      console.log(`[vault-index] Purged ${removed} stale file entries (deleted or newly excluded)`);
+    }
   }
 
   // Load fact entities for cross-referencing
@@ -394,15 +421,16 @@ async function main() {
 
   // Prepare statements
   const upsertFile = db.prepare(`
-    INSERT INTO vault_files (id, file_path, title, tags, personas, last_indexed, mtime, link_count, backlink_count)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0)
+    INSERT INTO vault_files (id, file_path, title, tags, personas, last_indexed, mtime, link_count, backlink_count, domain)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?)
     ON CONFLICT(id) DO UPDATE SET
       file_path = excluded.file_path,
       title = excluded.title,
       tags = excluded.tags,
       personas = excluded.personas,
       last_indexed = excluded.last_indexed,
-      mtime = excluded.mtime
+      mtime = excluded.mtime,
+      domain = excluded.domain
   `);
 
   const insertLink = db.prepare(`
@@ -427,6 +455,7 @@ async function main() {
         const tags = extractTags(content);
         const personas = resolvePersonas(fp);
 
+        const domain = classifyDomain(fp);
         upsertFile.run(
           id,
           fp,
@@ -435,6 +464,7 @@ async function main() {
           JSON.stringify(personas),
           nowSec,
           mtimeSec,
+          domain,
         );
         filesIndexed++;
       } catch (err) {
@@ -494,6 +524,19 @@ async function main() {
       SELECT COUNT(*) FROM vault_links WHERE target_id = vault_files.id
     );
   `);
+
+  // Reclassify domains on all files if requested
+  if (reclassify) {
+    const allVaultFiles = db.query("SELECT id, file_path FROM vault_files").all() as { id: string; file_path: string }[];
+    const updateDomain = db.prepare("UPDATE vault_files SET domain = ? WHERE id = ?");
+    const reclTx = db.transaction(() => {
+      for (const row of allVaultFiles) {
+        updateDomain.run(classifyDomain(row.file_path), row.id);
+      }
+    });
+    reclTx();
+    console.log(`[vault-index] Reclassified domains for ${allVaultFiles.length} files`);
+  }
 
   // Store run timestamp
   db.exec(`

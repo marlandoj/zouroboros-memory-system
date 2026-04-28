@@ -3,7 +3,7 @@
  * zo-memory-system v3 — Hybrid SQLite + Vector Search + Episodic Memory
  * 
  * v2 enhancements (QMD research):
- * - Vector embeddings (nomic-embed-text via Ollama)
+ * - Vector embeddings (OpenAI text-embedding-3-small by default)
  * - HyDE query expansion (optional)
  * - RRF fusion (BM25 + vectors)
  * - Composite scoring with decay awareness
@@ -33,12 +33,12 @@ import {
   searchOpenLoopsForContinuation,
   upsertOpenLoop,
 } from "./continuation";
+import { generate as mcGenerate, embeddings as mcEmbeddings } from "./model-client";
 
 // --- Configuration ---
 const DB_PATH = process.env.ZO_MEMORY_DB || "/home/workspace/.zo/memory/shared-facts.db";
-const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434";
-const EMBEDDING_MODEL = process.env.ZO_EMBEDDING_MODEL || "nomic-embed-text";
-const HYDE_MODEL = process.env.ZO_HYDE_MODEL || "qwen2.5:1.5b";
+// Model config now handled by model-client.ts; this is kept for status display and SQL defaults
+const EMBEDDING_MODEL = process.env.ZO_EMBEDDING_MODEL || "text-embedding-3-small";
 
 // Decay class TTLs in seconds
 const TTL_DEFAULTS: Record<string, number | null> = {
@@ -118,15 +118,72 @@ let dbInitialized = false;
 
 async function initDb(): Promise<Database> {
   if (dbInitialized && db) return db;
-  
+
   db = new Database(DB_PATH);
   db.exec("PRAGMA journal_mode = WAL");
-  
+  db.exec("PRAGMA foreign_keys = ON");
+
+  // Core facts table + FTS (must exist before anything else)
   db.exec(`
+    CREATE TABLE IF NOT EXISTS facts (
+      id TEXT PRIMARY KEY,
+      persona TEXT NOT NULL DEFAULT 'shared',
+      entity TEXT NOT NULL,
+      key TEXT,
+      value TEXT NOT NULL,
+      text TEXT,
+      category TEXT DEFAULT 'fact',
+      decay_class TEXT DEFAULT 'stable',
+      importance REAL DEFAULT 1.0,
+      source TEXT,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER,
+      last_accessed INTEGER,
+      confidence REAL DEFAULT 1.0,
+      metadata TEXT
+    );
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
+      text, entity, key, value, category,
+      content='facts', content_rowid='rowid'
+    );
+
+    CREATE TRIGGER IF NOT EXISTS facts_ai AFTER INSERT ON facts BEGIN
+      INSERT INTO facts_fts(rowid, text, entity, key, value, category)
+      VALUES (new.rowid, new.text, new.entity, new.key, new.value, new.category);
+    END;
+    CREATE TRIGGER IF NOT EXISTS facts_ad AFTER DELETE ON facts BEGIN
+      INSERT INTO facts_fts(facts_fts, rowid, text, entity, key, value, category)
+      VALUES ('delete', old.rowid, old.text, old.entity, old.key, old.value, old.category);
+    END;
+    CREATE TRIGGER IF NOT EXISTS facts_au AFTER UPDATE ON facts BEGIN
+      INSERT INTO facts_fts(facts_fts, rowid, text, entity, key, value, category)
+      VALUES ('delete', old.rowid, old.text, old.entity, old.key, old.value, old.category);
+      INSERT INTO facts_fts(rowid, text, entity, key, value, category)
+      VALUES (new.rowid, new.text, new.entity, new.key, new.value, new.category);
+    END;
+
+    CREATE INDEX IF NOT EXISTS idx_facts_persona ON facts(persona);
+    CREATE INDEX IF NOT EXISTS idx_facts_entity ON facts(entity);
+    CREATE INDEX IF NOT EXISTS idx_facts_category ON facts(category);
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS fact_links (
+      source_id TEXT NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
+      target_id TEXT NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
+      relation TEXT NOT NULL DEFAULT 'related',
+      weight REAL DEFAULT 1.0,
+      created_at INTEGER DEFAULT (strftime('%s','now')),
+      PRIMARY KEY (source_id, target_id, relation)
+    );
+    CREATE INDEX IF NOT EXISTS idx_fact_links_source ON fact_links(source_id);
+    CREATE INDEX IF NOT EXISTS idx_fact_links_target ON fact_links(target_id);
+
     CREATE TABLE IF NOT EXISTS fact_embeddings (
       fact_id TEXT PRIMARY KEY REFERENCES facts(id) ON DELETE CASCADE,
       embedding BLOB NOT NULL,
-      model TEXT DEFAULT '${EMBEDDING_MODEL}',
+      model TEXT DEFAULT 'text-embedding-3-small',
       created_at INTEGER DEFAULT (strftime('%s', 'now'))
     );
 
@@ -210,25 +267,11 @@ async function runMigration(): Promise<void> {
   }
 }
 
-// --- Embedding Service ---
+// --- Embedding Service (via model-client) ---
 async function getEmbedding(text: string): Promise<number[] | null> {
   try {
-    const response = await fetch(`${OLLAMA_URL}/api/embeddings`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: EMBEDDING_MODEL,
-        prompt: text.slice(0, 8000), // Truncate if too long
-      }),
-    });
-    
-    if (!response.ok) {
-      console.warn(`Ollama error: ${response.status}`);
-      return null;
-    }
-    
-    const data = await response.json();
-    return data.embedding;
+    const result = await mcEmbeddings(text.slice(0, 8000));
+    return result.embedding.length > 0 ? result.embedding : null;
   } catch (err) {
     console.warn(`Embedding failed: ${err}`);
     return null;
@@ -237,25 +280,13 @@ async function getEmbedding(text: string): Promise<number[] | null> {
 
 async function hydeExpand(query: string): Promise<string[]> {
   try {
-    const response = await fetch(`${OLLAMA_URL}/api/generate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: HYDE_MODEL,
-        prompt: `Query: "${query}"\n\nHypothetical relevant keywords and context (2-3 sentences):`,
-        stream: false,
-        options: {
-          num_predict: 80,
-          temperature: 0.3,
-        }
-      }),
+    const result = await mcGenerate({
+      prompt: `Query: "${query}"\n\nHypothetical relevant keywords and context (2-3 sentences):`,
+      workload: "hyde",
+      temperature: 0.3,
+      maxTokens: 80,
     });
-    
-    if (!response.ok) return [query];
-    
-    const data = await response.json();
-    const expanded = data.response?.trim();
-    
+    const expanded = result.content.trim();
     if (expanded && expanded.length > 10) {
       return [query, expanded];
     }
@@ -473,7 +504,7 @@ async function hybridSearch(
       const embedding = Array.from(new Float32Array(row.embedding.buffer, row.embedding.byteOffset, row.embedding.length / 4));
       const similarity = cosineSimilarity(queryEmbedding, embedding);
       
-      if (similarity > 0.5) { // Threshold
+      if (similarity > 0.35) { // Threshold (lowered from 0.5 to capture more semantic matches)
         const fact = db.prepare("SELECT * FROM facts WHERE id = ?").get(row.fact_id) as Record<string, unknown>;
         if (fact) {
           vectorResults.set(row.fact_id, {
@@ -521,8 +552,10 @@ async function hybridSearch(
 
   for (const [id, result] of scores) {
     let rrfScore = 0;
-    if (result.ftsRank) rrfScore += 1 / (k + result.ftsRank);
+    if (result.ftsRank) rrfScore += 2 / (k + result.ftsRank);  // FTS weighted 2x over vector
     if (result.vecScore) rrfScore += 1 / (k + result.vecScore);
+    // Multi-signal bonus: facts matching both FTS and vector are more relevant
+    if (result.ftsRank && result.vecScore) rrfScore *= 1.5;
 
     const nowSec2 = Math.floor(Date.now() / 1000);
     let freshness = 1;
@@ -585,30 +618,36 @@ async function hybridSearch(
 }
 
 // --- FTS-only Search (v1 compatible) ---
-async function ftsSearch(query: string, options: { persona?: string; limit?: number } = {}): Promise<Array<{ entry: MemoryEntry; score: number }>> {
+async function ftsSearch(query: string, options: { persona?: string; limit?: number; entity?: string } = {}): Promise<Array<{ entry: MemoryEntry; score: number }>> {
   const db = await initDb();
-  const { persona, limit = 5 } = options;
+  const { persona, limit = 5, entity } = options;
   const nowSec = Math.floor(Date.now() / 1000);
-  
+
   const safeQuery = query
     .replace(/['"]/g, "")
     .split(/\s+/)
     .filter((w) => w.length > 1)
     .map((w) => `"${w}"`)
     .join(" OR ");
-  
+
   if (!safeQuery) return [];
-  
+
+  const params: unknown[] = [safeQuery, nowSec];
+  let entityFilter = "";
+  if (persona) { entityFilter += " AND f.persona = ?"; params.push(persona); }
+  if (entity) { entityFilter += " AND f.entity = ?"; params.push(entity); }
+  params.push(limit);
+
   const rows = db.prepare(`
     SELECT f.*, rank
     FROM facts f
     JOIN facts_fts fts ON f.rowid = fts.rowid
     WHERE facts_fts MATCH ?
       AND (f.expires_at IS NULL OR f.expires_at > ?)
-      ${persona ? "AND f.persona = ?" : ""}
+      ${entityFilter}
     ORDER BY rank
     LIMIT ?
-  `).all(...[safeQuery, nowSec, ...(persona ? [persona] : []), limit]) as Array<Record<string, unknown>>;
+  `).all(...params) as Array<Record<string, unknown>>;
   
   const minRank = rows.length > 0 ? Math.min(...rows.map((r) => r.rank as number)) : 0;
   const maxRank = rows.length > 0 ? Math.max(...rows.map((r) => r.rank as number)) : 1;
@@ -644,19 +683,26 @@ function rowToEntry(row: Record<string, unknown>): MemoryEntry {
 async function backfillEmbeddings(batchSize: number = 50): Promise<{ processed: number; failed: number }> {
   const db = await initDb();
   
-  // Find facts without embeddings
+  // Find facts without embeddings (skip rows with null/empty text)
   const facts = db.prepare(`
     SELECT f.* FROM facts f
     LEFT JOIN fact_embeddings fe ON f.id = fe.fact_id
     WHERE fe.fact_id IS NULL
+      AND f.text IS NOT NULL
+      AND length(f.text) > 0
     LIMIT ?
   `).all(batchSize) as Array<Record<string, unknown>>;
-  
+
   let processed = 0;
   let failed = 0;
-  
+
   for (const row of facts) {
     const text = row.text as string;
+    if (!text || text.length === 0) {
+      failed++;
+      process.stdout.write("x");
+      continue;
+    }
     const embedding = await getEmbedding(text);
     
     if (embedding) {
@@ -961,9 +1007,9 @@ async function recordProcedureFeedback(
   const db = await initDb();
 
   if (success) {
-    db.prepare("UPDATE procedures SET success_count = success_count + 1 WHERE id = ?").run(procedureId);
+    db.prepare("UPDATE procedures SET success_count = success_count + 1, last_used_at = strftime('%s','now') WHERE id = ?").run(procedureId);
   } else {
-    db.prepare("UPDATE procedures SET failure_count = failure_count + 1 WHERE id = ?").run(procedureId);
+    db.prepare("UPDATE procedures SET failure_count = failure_count + 1, last_used_at = strftime('%s','now') WHERE id = ?").run(procedureId);
   }
 
   // Link to episode if provided
@@ -974,12 +1020,25 @@ async function recordProcedureFeedback(
   }
 }
 
+const MIN_RUNS_FOR_EVOLUTION = 3;
+
 async function evolveProcedure(procedureName: string): Promise<Procedure | null> {
   const db = await initDb();
   const current = await getProcedure(procedureName);
   if (!current) {
     console.error(`Procedure not found: ${procedureName}`);
     return null;
+  }
+
+  // Validation gate: require minimum successful runs before allowing evolution
+  const totalRuns = current.successCount + current.failureCount;
+  if (totalRuns < MIN_RUNS_FOR_EVOLUTION) {
+    console.warn(
+      `Evolution blocked for "${procedureName}" v${current.version}: ` +
+      `only ${totalRuns} run(s) recorded (need ${MIN_RUNS_FOR_EVOLUTION}). ` +
+      `Run the procedure at least ${MIN_RUNS_FOR_EVOLUTION - totalRuns} more time(s) before evolving.`
+    );
+    return current;
   }
 
   // Get failure episodes linked to this procedure
@@ -1017,12 +1076,8 @@ async function evolveProcedure(procedureName: string): Promise<Procedure | null>
   const currentStepsJson = JSON.stringify(current.steps, null, 2);
 
   try {
-    const resp = await fetch(`${OLLAMA_URL}/api/generate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: process.env.ZO_EVOLUTION_MODEL || "qwen2.5:7b",
-        prompt: `You are optimizing a multi-step workflow procedure. Given the current steps and recent failures, suggest an improved version.
+    const result = await mcGenerate({
+      prompt: `You are optimizing a multi-step workflow procedure. Given the current steps and recent failures, suggest an improved version.
 
 Current procedure "${procedureName}" v${current.version}:
 ${currentStepsJson}
@@ -1034,17 +1089,14 @@ Success rate: ${current.successCount}/${current.successCount + current.failureCo
 
 Output ONLY a valid JSON array of improved steps. Each step has: executor (string), taskPattern (string), timeoutSeconds (number), fallbackExecutor (string, optional), notes (string, optional).
 Keep the same general structure but adjust executors, timeouts, or add fallbacks based on failure patterns.`,
-        stream: false,
-        options: { temperature: 0.3, num_predict: 1500 },
-        keep_alive: "24h",
-      }),
-      signal: AbortSignal.timeout(60000),
+      workload: "extraction",
+      model: process.env.ZO_EVOLUTION_MODEL,
+      temperature: 0.3,
+      maxTokens: 1500,
+      json: true,
     });
 
-    if (!resp.ok) throw new Error(`Ollama returned ${resp.status}`);
-
-    const data = await resp.json();
-    const text = data.response?.trim() || "";
+    const text = result.content.trim();
 
     // Parse JSON from response
     const jsonMatch = text.match(/\[[\s\S]*\]/);
@@ -1062,7 +1114,7 @@ Keep the same general structure but adjust executors, timeouts, or add fallbacks
       notes: s.notes ? String(s.notes) : undefined,
     }));
 
-    // Create evolved procedure
+    // Create evolved procedure (starts with 0 runs — must be validated before trusting)
     const evolved = await createProcedure({
       name: procedureName,
       version: current.version + 1,
@@ -1070,7 +1122,10 @@ Keep the same general structure but adjust executors, timeouts, or add fallbacks
       evolvedFrom: current.id,
     });
 
-    console.log(`Evolved to v${evolved.version} with ${evolved.steps.length} steps`);
+    console.log(
+      `Evolved to v${evolved.version} with ${evolved.steps.length} steps. ` +
+      `⚠️  Unvalidated — run at least ${MIN_RUNS_FOR_EVOLUTION} times before relying on this version.`
+    );
     return evolved;
   } catch (err) {
     console.error(`Evolution failed: ${err}`);
@@ -1162,6 +1217,55 @@ async function autoCreateProcedureFromEpisodes(
   return proc;
 }
 
+// --- Delete & Prune ---
+async function deleteFact(factId: string): Promise<boolean> {
+  const db = await initDb();
+  const existing = db.prepare("SELECT id FROM facts WHERE id = ?").get(factId) as Record<string, unknown> | null;
+  if (!existing) return false;
+  db.exec("PRAGMA foreign_keys = ON");
+  db.prepare("DELETE FROM facts WHERE id = ?").run(factId);
+  return true;
+}
+
+interface PruneResult {
+  deleted: number;
+  ids: string[];
+}
+
+async function pruneExpired(dryRun: boolean = false): Promise<PruneResult> {
+  const db = await initDb();
+  const nowSec = Math.floor(Date.now() / 1000);
+  const rows = db.prepare(
+    "SELECT id, entity, key, value FROM facts WHERE expires_at IS NOT NULL AND expires_at < ?"
+  ).all(nowSec) as Array<Record<string, unknown>>;
+  if (!dryRun && rows.length > 0) {
+    db.exec("PRAGMA foreign_keys = ON");
+    db.prepare("DELETE FROM facts WHERE expires_at IS NOT NULL AND expires_at < ?").run(nowSec);
+  }
+  return { deleted: dryRun ? 0 : rows.length, ids: rows.map(r => r.id as string) };
+}
+
+async function pruneBelowActivation(threshold: number, dryRun: boolean = false): Promise<PruneResult> {
+  const db = await initDb();
+  const hasActr = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type=\'table\' AND name=\'actr_activation\'"
+  ).get();
+  if (!hasActr) {
+    console.error("ACT-R activation table not found. Run the system with ACT-R enabled first.");
+    return { deleted: 0, ids: [] };
+  }
+  const rows = db.prepare(
+    "SELECT f.id, f.entity, f.key, f.value, a.total_activation FROM facts f JOIN actr_activation a ON f.id = a.fact_id WHERE a.total_activation < ?"
+  ).all(threshold) as Array<Record<string, unknown>>;
+  if (!dryRun && rows.length > 0) {
+    db.exec("PRAGMA foreign_keys = ON");
+    db.prepare(
+      "DELETE FROM facts WHERE id IN (SELECT f.id FROM facts f JOIN actr_activation a ON f.id = a.fact_id WHERE a.total_activation < ?)"
+    ).run(threshold);
+  }
+  return { deleted: dryRun ? 0 : rows.length, ids: rows.map(r => r.id as string) };
+}
+
 // --- Stats ---
 async function stats(): Promise<void> {
   const db = await initDb();
@@ -1178,7 +1282,6 @@ async function stats(): Promise<void> {
   console.log(`  Facts with embeddings: ${withEmbeddings.cnt}`);
   console.log(`  Vector cache entries: ${embeddingCount.cnt}`);
   console.log(`  Embedding model: ${EMBEDDING_MODEL}`);
-  console.log(`  Ollama URL: ${OLLAMA_URL}`);
   
   // Check for v3 tables (episodes, procedures)
   const hasEpisodes = db.prepare(
@@ -1239,6 +1342,17 @@ Commands:
   episodes  List/query episodic memory (--create to add)
   procedures  List/manage workflow procedures (--create, --show, --evolve, --auto, --feedback)
   trends    Show velocity trends for an entity
+  delete    Delete a specific fact by ID (cascades to embeddings, links, activation)
+  prune     Garbage-collect expired facts and/or low-activation facts
+
+
+Delete options:
+  --id <fact_id>       Fact ID to delete (required)
+
+Prune options:
+  --expired            Prune facts past their expires_at timestamp (default if no flag given)
+  --below-activation <n>  Prune facts with ACT-R activation below threshold (e.g. -3.0)
+  --dry-run            Preview what would be pruned without deleting
 
 Store options:
   --entity <name>      Entity name (required)
@@ -1292,6 +1406,10 @@ Examples:
   bun memory.ts episodes --create --summary "Fixed auth bug" --outcome success --entities "auth,security"
   bun memory.ts procedures --create --name "deploy-flow" --steps '[{"executor":"claude-code","taskPattern":"build","timeoutSeconds":300}]'
   bun memory.ts procedures --auto "swarm" --since "7 days ago"
+  bun memory.ts delete --id "abc-123-def"
+  bun memory.ts prune --expired --dry-run
+  bun memory.ts prune --below-activation -3.0
+  bun memory.ts prune --expired --below-activation -3.0
   bun memory.ts stats
 `);
 }
@@ -1316,7 +1434,7 @@ async function main() {
         flags.hyde = "false";
       } else if (args[i] === "--no-graph") {
         flags.graph = "false";
-      } else if (args[i] === "--create" || args[i] === "--list" || args[i] === "--success" || args[i] === "--failure" || args[i] === "--dry-run") {
+      } else if (args[i] === "--create" || args[i] === "--list" || args[i] === "--success" || args[i] === "--failure" || args[i] === "--dry-run" || args[i] === "--json" || args[i] === "--no-embed") {
         flags[args[i].slice(2)] = "true";
       } else {
         flags[args[i].slice(2)] = args[i + 1] || "";
@@ -1357,22 +1475,140 @@ async function main() {
       }
       break;
     }
-    
+
+    case "batch-store": {
+      // Read JSON array from stdin (pipe) or --file path
+      // Each item: { entity, value, key?, category?, decay?, importance?, persona?, source?, text? }
+      let input: string;
+      if (flags.file) {
+        input = readFileSync(flags.file, "utf-8");
+      } else {
+        // Read from stdin
+        const chunks: Buffer[] = [];
+        const reader = Bun.stdin.stream().getReader();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(Buffer.from(value));
+        }
+        input = Buffer.concat(chunks).toString("utf-8");
+      }
+
+      let items: Array<Record<string, unknown>>;
+      try {
+        items = JSON.parse(input);
+        if (!Array.isArray(items)) throw new Error("Input must be a JSON array");
+      } catch (e: any) {
+        console.error(`Error: Invalid JSON input: ${e.message}`);
+        process.exit(1);
+      }
+
+      const db = await initDb();
+      const noEmbed = flags["no-embed"] === "true";
+      const nowSec = Math.floor(Date.now() / 1000);
+      const ids: string[] = [];
+      let embedCount = 0;
+
+      // Phase 1: Insert all facts in a single transaction
+      const insertStmt = db.prepare(`
+        INSERT INTO facts (id, persona, entity, key, value, text, category, decay_class, importance, source, created_at, expires_at, last_accessed, confidence, metadata)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      db.exec("BEGIN TRANSACTION");
+      try {
+        for (const item of items) {
+          const id = randomUUID();
+          const entity = item.entity as string;
+          const value = item.value as string;
+          if (!entity || !value) {
+            console.error(`Skipping item: missing entity or value`);
+            continue;
+          }
+          const key = (item.key as string) || null;
+          const persona = (item.persona as string) || "shared";
+          const text = (item.text as string) || `${entity} ${key || ""}: ${value}`;
+          const category = (item.category as string) || "fact";
+          const decayClass = (item.decay as string) || "stable";
+          const importance = parseFloat(String(item.importance)) || 1.0;
+          const source = (item.source as string) || "batch";
+          const expiresAt = TTL_DEFAULTS[decayClass as DecayClass] ? nowSec + TTL_DEFAULTS[decayClass as DecayClass]! : null;
+
+          insertStmt.run(id, persona, entity, key, value, text, category, decayClass, importance, source, nowSec, expiresAt, nowSec, 1.0, null);
+          ids.push(id);
+        }
+        db.exec("COMMIT");
+      } catch (e) {
+        db.exec("ROLLBACK");
+        throw e;
+      }
+
+      console.error(`Inserted ${ids.length} facts`);
+
+      // Phase 2: Generate embeddings (unless --no-embed)
+      if (!noEmbed && ids.length > 0) {
+        const embedStmt = db.prepare(`INSERT OR REPLACE INTO fact_embeddings (fact_id, embedding, model) VALUES (?, ?, ?)`);
+        const batchSize = 10;
+        for (let i = 0; i < ids.length; i += batchSize) {
+          const batch = ids.slice(i, i + batchSize);
+          const facts = batch.map(id => db.prepare("SELECT id, text FROM facts WHERE id = ?").get(id) as { id: string; text: string });
+          const embedResults = await Promise.all(
+            facts.filter(Boolean).map(async (f) => {
+              try {
+                const emb = await getEmbedding(f.text);
+                return emb ? { id: f.id, embedding: emb } : null;
+              } catch { return null; }
+            })
+          );
+          for (const result of embedResults) {
+            if (result) {
+              const buf = Buffer.from(new Float32Array(result.embedding).buffer);
+              embedStmt.run(result.id, buf, EMBEDDING_MODEL);
+              embedCount++;
+            }
+          }
+          if (ids.length > 20) {
+            console.error(`Embeddings: ${Math.min(i + batchSize, ids.length)}/${ids.length}`);
+          }
+        }
+      }
+
+      if (flags.json === "true") {
+        console.log(JSON.stringify({ stored: ids.length, embedded: embedCount, ids }));
+      } else {
+        console.log(`Stored: ${ids.length} facts, Embedded: ${embedCount}`);
+      }
+      break;
+    }
+
     case "search": {
       const query = positional[0];
       if (!query) {
         console.error("Error: search query required");
         process.exit(1);
       }
-      const results = await ftsSearch(query, {
+      const searchOpts: { persona?: string; limit?: number; entity?: string } = {
         persona: flags.persona,
         limit: parseInt(flags.limit) || 5,
-      });
-      console.log(`Found ${results.length} results:\n`);
-      for (const { entry, score } of results) {
-        console.log(`[${entry.decayClass}] ${entry.entity}.${entry.key || "_"} = ${entry.value.slice(0, 80)}`);
-        console.log(`    score: ${score.toFixed(3)}`);
-        console.log();
+      };
+      if (flags.entity) searchOpts.entity = flags.entity;
+      const results = await ftsSearch(query, searchOpts);
+      if (flags.json === "true") {
+        console.log(JSON.stringify(results.map(({ entry, score }) => ({
+          id: entry.id, persona: entry.persona, entity: entry.entity,
+          key: entry.key, value: entry.value, text: entry.text,
+          category: entry.category, decayClass: entry.decayClass,
+          importance: entry.importance, source: entry.source,
+          createdAt: entry.createdAt, expiresAt: entry.expiresAt,
+          confidence: entry.confidence, score,
+        }))));
+      } else {
+        console.log(`Found ${results.length} results:\n`);
+        for (const { entry, score } of results) {
+          console.log(`[${entry.decayClass}] ${entry.entity}.${entry.key || "_"} = ${entry.value.slice(0, 80)}`);
+          console.log(`    score: ${score.toFixed(3)}`);
+          console.log();
+        }
       }
       break;
     }
@@ -1383,18 +1619,31 @@ async function main() {
         console.error("Error: search query required");
         process.exit(1);
       }
-      console.log(`Searching: "${query}" ${flags.hyde === "false" ? "(no HyDE)" : "(with HyDE)"}${flags.graph === "false" ? " (no graph)" : ""}\n`);
+      if (flags.json !== "true") {
+        console.log(`Searching: "${query}" ${flags.hyde === "false" ? "(no HyDE)" : "(with HyDE)"}${flags.graph === "false" ? " (no graph)" : ""}\n`);
+      }
       const results = await hybridSearch(query, {
         persona: flags.persona,
         limit: parseInt(flags.limit) || 6,
         useHyde: flags.hyde !== "false",
         useGraph: flags.graph !== "false",
       });
-      console.log(`Found ${results.length} results:\n`);
-      for (const { entry, score, sources } of results) {
-        console.log(`[${entry.decayClass}] ${entry.entity}.${entry.key || "_"} = ${entry.value.slice(0, 80)}`);
-        console.log(`    score: ${score.toFixed(3)} | sources: ${sources.join(", ")}`);
-        console.log();
+      if (flags.json === "true") {
+        console.log(JSON.stringify(results.map(({ entry, score, sources }) => ({
+          id: entry.id, persona: entry.persona, entity: entry.entity,
+          key: entry.key, value: entry.value, text: entry.text,
+          category: entry.category, decayClass: entry.decayClass,
+          importance: entry.importance, source: entry.source,
+          createdAt: entry.createdAt, expiresAt: entry.expiresAt,
+          confidence: entry.confidence, score, sources,
+        }))));
+      } else {
+        console.log(`Found ${results.length} results:\n`);
+        for (const { entry, score, sources } of results) {
+          console.log(`[${entry.decayClass}] ${entry.entity}.${entry.key || "_"} = ${entry.value.slice(0, 80)}`);
+          console.log(`    score: ${score.toFixed(3)} | sources: ${sources.join(", ")}`);
+          console.log();
+        }
       }
       break;
     }
@@ -1725,6 +1974,62 @@ async function main() {
       } catch (e) {
         console.error(`Metrics command failed: ${e}`);
         process.exit(1);
+      }
+      break;
+    }
+
+    case "delete": {
+      const factId = flags.id || positional[0];
+      if (!factId) {
+        console.error("Error: --id <fact_id> is required");
+        process.exit(1);
+      }
+      const deleted = await deleteFact(factId);
+      if (deleted) {
+        console.log(`Deleted fact: ${factId} (cascaded embeddings, links, activation)`);
+      } else {
+        console.error(`Fact not found: ${factId}`);
+        process.exit(1);
+      }
+      break;
+    }
+
+    case "prune": {
+      const dryRun = flags["dry-run"] === "true";
+      const results: PruneResult[] = [];
+
+      if (flags.expired === "true" || (!flags["below-activation"] && !flags.expired)) {
+        const r = await pruneExpired(dryRun);
+        if (r.ids.length > 0) {
+          console.log(`${dryRun ? "[DRY RUN] Would prune" : "Pruned"} ${r.ids.length} expired facts`);
+          if (dryRun) r.ids.slice(0, 10).forEach(id => console.log(`  - ${id}`));
+        } else {
+          console.log("No expired facts to prune.");
+        }
+        results.push(r);
+      }
+
+      if (flags["below-activation"]) {
+        const threshold = parseFloat(flags["below-activation"]);
+        if (isNaN(threshold)) {
+          console.error("Error: --below-activation requires a numeric threshold (e.g. -1.5)");
+          process.exit(1);
+        }
+        const r = await pruneBelowActivation(threshold, dryRun);
+        if (r.ids.length > 0) {
+          console.log(`${dryRun ? "[DRY RUN] Would prune" : "Pruned"} ${r.ids.length} facts below activation ${threshold}`);
+          if (dryRun) r.ids.slice(0, 10).forEach(id => console.log(`  - ${id}`));
+        } else {
+          console.log(`No facts below activation threshold ${threshold}.`);
+        }
+        results.push(r);
+      }
+
+      const totalDeleted = results.reduce((sum, r) => sum + (dryRun ? r.ids.length : r.deleted), 0);
+      if (dryRun) {
+        console.log(`\n[DRY RUN] Total: ${totalDeleted} facts would be pruned. Re-run without --dry-run to execute.`);
+      } else {
+        console.log(`\nTotal pruned: ${totalDeleted} facts.`);
       }
       break;
     }
