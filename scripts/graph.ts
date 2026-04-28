@@ -11,8 +11,6 @@
  */
 
 import { Database } from "bun:sqlite";
-import { createHash } from "crypto";
-import { generate, embeddings } from "./model-client";
 
 const DB_PATH = process.env.ZO_MEMORY_DB || "/home/workspace/.zo/memory/shared-facts.db";
 
@@ -389,207 +387,6 @@ function knowledgeGaps(db: Database): void {
   }
 }
 
-// --- Community Summarization (GraphRAG Edge 2024) ---
-
-interface Component {
-  members: string[];        // fact ids
-  internalDegree: Map<string, number>;
-}
-
-function findComponents(db: Database): Component[] {
-  const allFacts = db.prepare("SELECT id FROM facts").all() as Array<{ id: string }>;
-  const allLinks = db.prepare("SELECT source_id, target_id FROM fact_links").all() as Array<{ source_id: string; target_id: string }>;
-
-  const adj = new Map<string, Set<string>>();
-  for (const f of allFacts) adj.set(f.id, new Set());
-  for (const l of allLinks) {
-    adj.get(l.source_id)?.add(l.target_id);
-    adj.get(l.target_id)?.add(l.source_id);
-  }
-
-  const seen = new Set<string>();
-  const comps: Component[] = [];
-  for (const f of allFacts) {
-    if (seen.has(f.id)) continue;
-    const ns = adj.get(f.id);
-    if (!ns || ns.size === 0) { seen.add(f.id); continue; }
-
-    const members: string[] = [];
-    const queue = [f.id];
-    seen.add(f.id);
-    while (queue.length > 0) {
-      const cur = queue.shift()!;
-      members.push(cur);
-      for (const n of adj.get(cur) || []) {
-        if (!seen.has(n)) { seen.add(n); queue.push(n); }
-      }
-    }
-    const internalDegree = new Map<string, number>();
-    for (const m of members) internalDegree.set(m, adj.get(m)?.size || 0);
-    comps.push({ members, internalDegree });
-  }
-  return comps;
-}
-
-function communityIdFor(memberIds: string[]): string {
-  const sorted = [...memberIds].sort().join("|");
-  return "cs_" + createHash("sha256").update(sorted).digest("hex").slice(0, 16);
-}
-
-function cosine(a: number[], b: number[]): number {
-  if (a.length !== b.length || a.length === 0) return 0;
-  let dot = 0, na = 0, nb = 0;
-  for (let i = 0; i < a.length; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
-  if (na === 0 || nb === 0) return 0;
-  return dot / (Math.sqrt(na) * Math.sqrt(nb));
-}
-
-async function communitySummarize(db: Database, opts: {
-  minSize: number;
-  maxClusters: number;
-  topMembers: number;
-  linkThreshold: number;
-  dryRun: boolean;
-}): Promise<void> {
-  const t0 = Date.now();
-  const allComps = findComponents(db);
-  const targets = allComps
-    .filter(c => c.members.length >= opts.minSize)
-    .sort((a, b) => b.members.length - a.members.length)
-    .slice(0, opts.maxClusters);
-
-  console.log(`Components total: ${allComps.length}`);
-  console.log(`Components ≥${opts.minSize}: ${targets.length}`);
-  console.log(`Mode: ${opts.dryRun ? "DRY-RUN" : "LIVE"}`);
-  console.log("");
-
-  const summarized: Array<{
-    communityId: string;
-    members: string[];
-    summary: string;
-    embedding: number[];
-    skipped: boolean;
-    reason?: string;
-  }> = [];
-
-  let llmCost = 0;
-  let llmCalls = 0;
-
-  for (let i = 0; i < targets.length; i++) {
-    const comp = targets[i];
-    const cid = communityIdFor(comp.members);
-
-    const existing = db.prepare("SELECT id FROM facts WHERE id = ?").get(cid) as { id: string } | undefined;
-    if (existing) {
-      console.log(`[${i + 1}/${targets.length}] ${cid} — exists, skip`);
-      summarized.push({ communityId: cid, members: comp.members, summary: "", embedding: [], skipped: true, reason: "exists" });
-      continue;
-    }
-
-    // Pick top-N members by internal degree as representatives
-    const reps = comp.members
-      .map(m => ({ id: m, deg: comp.internalDegree.get(m) || 0 }))
-      .sort((a, b) => b.deg - a.deg)
-      .slice(0, opts.topMembers)
-      .map(r => r.id);
-
-    const repFacts = db.prepare(
-      `SELECT id, entity, key, value FROM facts WHERE id IN (${reps.map(() => "?").join(",")})`
-    ).all(...reps) as Array<{ id: string; entity: string; key: string | null; value: string }>;
-
-    const factLines = repFacts.map((f, idx) =>
-      `${idx + 1}. [${f.entity}.${f.key || "_"}] ${f.value.slice(0, 240)}`
-    ).join("\n");
-
-    const prompt = `You are summarizing a connected cluster from a knowledge graph.
-Below are ${repFacts.length} representative facts (out of ${comp.members.length} in the cluster).
-
-Write a 2-3 sentence summary capturing the cluster's core theme — what topic, decision, or system these facts collectively describe. Be specific, name entities, no preamble.
-
-Facts:
-${factLines}
-
-Theme summary:`;
-
-    if (opts.dryRun) {
-      console.log(`[${i + 1}/${targets.length}] ${cid} — would summarize ${comp.members.length} members (${reps.length} reps)`);
-      summarized.push({ communityId: cid, members: comp.members, summary: "[dry-run]", embedding: [], skipped: true, reason: "dry-run" });
-      continue;
-    }
-
-    let summary = "";
-    try {
-      const r = await generate({ prompt, workload: "summarization", temperature: 0.3, maxTokens: 250 });
-      summary = r.content.trim();
-      llmCost += r.cost_usd;
-      llmCalls++;
-    } catch (e) {
-      console.log(`[${i + 1}/${targets.length}] ${cid} — LLM failed: ${e instanceof Error ? e.message : String(e)}`);
-      continue;
-    }
-
-    if (!summary) {
-      console.log(`[${i + 1}/${targets.length}] ${cid} — empty summary, skip`);
-      continue;
-    }
-
-    let emb: number[] = [];
-    try {
-      const er = await embeddings(summary);
-      emb = er.embedding;
-    } catch (e) {
-      console.log(`[${i + 1}/${targets.length}] ${cid} — embedding failed (will store summary anyway): ${e instanceof Error ? e.message : String(e)}`);
-    }
-
-    const now = Date.now();
-    const metadata = JSON.stringify({
-      community_id: cid,
-      member_count: comp.members.length,
-      rep_count: repFacts.length,
-      generated_at: new Date(now).toISOString(),
-    });
-
-    db.transaction(() => {
-      db.prepare(
-        `INSERT INTO facts (id, persona, entity, key, value, text, category, decay_class, importance, source, created_at, confidence, metadata)
-         VALUES (?, 'shared', 'community.summary', ?, ?, ?, 'community_summary', 'stable', 0.8, 'graph.community-summarize', ?, 0.9, ?)`
-      ).run(cid, cid, summary, summary, now, metadata);
-
-      const linkStmt = db.prepare(
-        `INSERT OR REPLACE INTO fact_links (source_id, target_id, relation, weight) VALUES (?, ?, 'summarizes', 1.0)`
-      );
-      for (const m of comp.members) linkStmt.run(cid, m);
-    })();
-
-    console.log(`[${i + 1}/${targets.length}] ${cid} — ${comp.members.length} members linked, summary: ${summary.slice(0, 100)}${summary.length > 100 ? "…" : ""}`);
-    summarized.push({ communityId: cid, members: comp.members, summary, embedding: emb, skipped: false });
-  }
-
-  // Cross-cluster linking via summary embedding similarity
-  const withEmb = summarized.filter(s => !s.skipped && s.embedding.length > 0);
-  let crossLinks = 0;
-  if (!opts.dryRun && withEmb.length >= 2) {
-    console.log(`\nCross-cluster linking (threshold cosine ≥ ${opts.linkThreshold})...`);
-    const linkStmt = db.prepare(
-      `INSERT OR REPLACE INTO fact_links (source_id, target_id, relation, weight) VALUES (?, ?, 'community_related', ?)`
-    );
-    for (let i = 0; i < withEmb.length; i++) {
-      for (let j = i + 1; j < withEmb.length; j++) {
-        const c = cosine(withEmb[i].embedding, withEmb[j].embedding);
-        if (c >= opts.linkThreshold) {
-          linkStmt.run(withEmb[i].communityId, withEmb[j].communityId, c);
-          linkStmt.run(withEmb[j].communityId, withEmb[i].communityId, c);
-          crossLinks++;
-        }
-      }
-    }
-    console.log(`Cross-cluster links created: ${crossLinks} pairs`);
-  }
-
-  const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-  console.log(`\nDone in ${elapsed}s — clusters processed: ${targets.length}, LLM calls: ${llmCalls}, est. cost: $${llmCost.toFixed(4)}, cross-links: ${crossLinks}`);
-}
-
 // --- CLI ---
 
 function printUsage() {
@@ -600,19 +397,11 @@ Usage:
   bun graph.ts <command> [options]
 
 Commands:
-  link                  Create a link between two facts
-  unlink                Remove a link between two facts
-  show                  Show links for an entity or fact ID
-  find-connections      Find shortest path between two entities
-  knowledge-gaps        Analyze orphans, dead ends, and clusters
-  community-summarize   Generate GraphRAG summaries for clusters ≥ min-size
-
-Community-summarize options:
-  --min-size <n>        Minimum component size to summarize (default: 5)
-  --max-clusters <n>    Cap number of clusters processed this run (default: 300)
-  --top-members <n>     Top-degree members per cluster used as representatives (default: 8)
-  --link-threshold <f>  Cosine threshold for cross-cluster summary links (default: 0.78)
-  --dry-run             Print plan without LLM calls or DB writes
+  link               Create a link between two facts
+  unlink             Remove a link between two facts
+  show               Show links for an entity or fact ID
+  find-connections   Find shortest path between two entities
+  knowledge-gaps     Analyze orphans, dead ends, and clusters
 
 Link options:
   --source <id>      Source fact ID (required)
@@ -651,17 +440,12 @@ async function main() {
     process.exit(0);
   }
 
-  // Parse flags (boolean-safe: don't consume next arg if it's another flag)
+  // Parse flags
   const flags: Record<string, string> = {};
   for (let i = 1; i < args.length; i++) {
     if (args[i].startsWith("--")) {
-      const next = args[i + 1];
-      if (next !== undefined && !next.startsWith("--")) {
-        flags[args[i].slice(2)] = next;
-        i++;
-      } else {
-        flags[args[i].slice(2)] = "";
-      }
+      flags[args[i].slice(2)] = args[i + 1] || "";
+      i++;
     }
   }
 
@@ -707,17 +491,6 @@ async function main() {
 
     case "knowledge-gaps": {
       knowledgeGaps(db);
-      break;
-    }
-
-    case "community-summarize": {
-      await communitySummarize(db, {
-        minSize: parseInt(flags["min-size"]) || 5,
-        maxClusters: parseInt(flags["max-clusters"]) || 300,
-        topMembers: parseInt(flags["top-members"]) || 8,
-        linkThreshold: parseFloat(flags["link-threshold"]) || 0.78,
-        dryRun: process.argv.includes("--dry-run"),
-      });
       break;
     }
 
