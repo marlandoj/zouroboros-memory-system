@@ -23,11 +23,11 @@ import { Database } from "bun:sqlite";
 import { randomUUID } from "crypto";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
+import { embeddings as mcEmbeddings } from "./model-client";
 
 // --- Config ---
 const DB_PATH = process.env.ZO_MEMORY_DB || "/home/workspace/.zo/memory/shared-facts.db";
-const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434";
-const EMBEDDING_MODEL = process.env.ZO_EMBEDDING_MODEL || "nomic-embed-text";
+const EMBEDDING_MODEL = process.env.ZO_EMBEDDING_MODEL || "text-embedding-3-small";
 const HISTORY_PATH = join(process.env.HOME || "/tmp", ".swarm", "executor-history.json");
 
 // --- DB ---
@@ -44,15 +44,8 @@ function getDb(): Database {
 // --- Embedding helper ---
 async function getEmbedding(text: string): Promise<number[] | null> {
   try {
-    const resp = await fetch(`${OLLAMA_URL}/api/embeddings`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: EMBEDDING_MODEL, prompt: text }),
-      signal: AbortSignal.timeout(30000),
-    });
-    if (!resp.ok) return null;
-    const data = await resp.json();
-    return data.embedding || null;
+    const result = await mcEmbeddings(text, EMBEDDING_MODEL);
+    return result.embedding || null;
   } catch {
     return null;
   }

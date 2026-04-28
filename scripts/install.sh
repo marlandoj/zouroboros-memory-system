@@ -13,26 +13,13 @@ SKILL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 WORKSPACE_DIR="/home/workspace"
 MEMORY_DIR="$WORKSPACE_DIR/.zo/memory"
 
-# Check for Ollama
-echo "🔍 Checking Ollama..."
-if ! command -v ollama &> /dev/null; then
-  echo "  ⚠️  Ollama not found. Install with: curl -fsSL https://ollama.com/install.sh | sh"
-  echo "  Continuing with FTS-only mode (no vector search)..."
+# Check for OpenAI key
+echo "🔍 Checking model provider configuration..."
+if [ -z "${OPENAI_API_KEY:-}" ]; then
+  echo "  ⚠️  OPENAI_API_KEY not set. OpenAI-backed gate/extraction/embedding calls will fail."
+  echo "  Add it in Zo Secrets or the service env_vars before enabling the memory services."
 else
-  # Check for required models
-  echo "  ✓ Ollama found"
-  
-  if ! ollama list | grep -q "nomic-embed-text"; then
-    echo "  ⚠️  nomic-embed-text not found. Pull with: ollama pull nomic-embed-text"
-  else
-    echo "  ✓ nomic-embed-text installed"
-  fi
-  
-  if ! ollama list | grep -q "qwen2.5:1.5b"; then
-    echo "  ⚠️  qwen2.5:1.5b not found (HyDE model). Pull with: ollama pull qwen2.5:1.5b"
-  else
-    echo "  ✓ qwen2.5:1.5b installed"
-  fi
+  echo "  ✓ OPENAI_API_KEY detected"
 fi
 
 echo

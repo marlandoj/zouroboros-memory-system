@@ -1,5 +1,9 @@
 # Zouroboros Memory System
 
+> **Status (2026-04-27):** This repository is the **canonical home for the runtime skill** that powers Zo Computer's memory daemon, gate hook, capture pipeline, knowledge graph, vault, and persona memory files. The [Zouroboros monorepo](https://github.com/marlandoj/zouroboros) `packages/memory/` is the **library** used by npm consumers and bench adapters; it currently lags this skill on graph/community/vault features. A future consolidation pass will reconcile the two — see [issues](https://github.com/marlandoj/zouroboros-memory-system/issues) for status. Until then, file runtime/skill issues here and library/SDK issues against the monorepo.
+
+---
+
 > Give your Zo Computer personas persistent memory with semantic understanding, a knowledge graph, and automatic fact extraction. Generation defaults route through OpenAI; embeddings remain local by default.
 >
 > Part of the [Zouroboros](https://github.com/marlandoj) ecosystem — self-improving AI development tools for Zo Computer.

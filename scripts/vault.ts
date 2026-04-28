@@ -23,6 +23,18 @@ const DB_PATH = "/home/workspace/.zo/memory/shared-facts.db";
 const WORKSPACE = "/home/workspace";
 const SCRIPTS_DIR = dirname(new URL(import.meta.url).pathname);
 
+// Archive directories excluded from orphan metric — standalone deliverables by design
+const ARCHIVE_DIRS = [
+  "Audits", "Articles", "BrandDesignPack", "Documents", "FFBSourceFiles",
+  "FFB_Photos", "FFB_Canon", "Images", "Audio", "IDENTITY", "Fauna&Flora",
+  "Infrastructure", "Backups", "Archive", "Trash",
+];
+
+// SQL fragment: exclude archive dirs from vault_files queries
+const ARCHIVE_EXCLUSION = ARCHIVE_DIRS
+  .map(d => `file_path NOT LIKE '%/${d}/%'`)
+  .join(" AND ");
+
 // ── arg parsing ────────────────────────────────────────────────────
 const args = process.argv.slice(2);
 const flags = {
@@ -296,6 +308,7 @@ function cmdOrphans() {
       `SELECT id, file_path, title FROM vault_files
        WHERE id NOT IN (SELECT source_id FROM vault_links)
          AND id NOT IN (SELECT target_id FROM vault_links)
+         AND ${ARCHIVE_EXCLUSION}
        ORDER BY file_path`
     )
     .all() as any[];
@@ -425,11 +438,12 @@ function cmdStats() {
   // graph density
   const density = totalFiles > 1 ? (totalLinks / (totalFiles * (totalFiles - 1))) * 100 : 0;
 
-  // orphans
+  // orphans (archive dirs excluded — standalone deliverables by design)
   const orphanCount = (db.query(
     `SELECT count(*) as c FROM vault_files
      WHERE id NOT IN (SELECT source_id FROM vault_links)
-       AND id NOT IN (SELECT target_id FROM vault_links)`
+       AND id NOT IN (SELECT target_id FROM vault_links)
+       AND ${ARCHIVE_EXCLUSION}`
   ).get() as any).c;
 
   // persona coverage

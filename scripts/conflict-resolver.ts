@@ -11,9 +11,9 @@
 
 import { Database } from "bun:sqlite";
 import { randomUUID } from "crypto";
+import { generate as mcGenerate } from "./model-client";
 
 const DB_PATH = process.env.ZO_MEMORY_DB || "/home/workspace/.zo/memory/shared-facts.db";
-const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434";
 
 function getDb(): Database {
   const db = new Database(DB_PATH);
@@ -62,17 +62,15 @@ export interface ProvenanceRecord {
   effectiveFrom: number; effectiveUntil?: number;
 }
 
-async function ollamaCheck(prompt: string): Promise<boolean> {
+async function llmCheck(prompt: string): Promise<boolean> {
   try {
-    const resp = await fetch(`${OLLAMA_URL}/api/generate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: "qwen2.5:1.5b", prompt, stream: false, options: { temperature: 0, num_predict: 50 } }),
-      signal: AbortSignal.timeout(15000),
+    const result = await mcGenerate({
+      prompt,
+      workload: "gate",
+      temperature: 0,
+      maxTokens: 50,
     });
-    if (!resp.ok) return false;
-    const data = await resp.json();
-    const r = (data.response || "").trim().toLowerCase();
+    const r = result.content.trim().toLowerCase();
     return r === "yes" || r === "true";
   } catch { return false; }
 }
@@ -88,7 +86,7 @@ export async function isContradiction(
   const prompt = `Do these two statements directly contradict each other? Reply "yes" or "no".
 1: "${fact1.value.slice(0, 300)}"
 2: "${fact2.value.slice(0, 300)}"`;
-  return ollamaCheck(prompt);
+  return llmCheck(prompt);
 }
 
 export function findEntityConflicts(db: Database, entity: string): ConflictRecord[] {

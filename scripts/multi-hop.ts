@@ -15,10 +15,9 @@
 import { Database } from "bun:sqlite";
 import { existsSync } from "fs";
 import { join } from "path";
+import { generate as mcGenerate } from "./model-client";
 
 const DB_PATH = process.env.ZO_MEMORY_DB || "/home/workspace/.zo/memory/shared-facts.db";
-const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434";
-const HYDE_MODEL = process.env.ZO_HYDE_MODEL || "qwen2.5:1.5b";
 
 function getDb(): Database {
   const db = new Database(DB_PATH);
@@ -53,17 +52,15 @@ interface SearchResult {
   rank: number;
 }
 
-async function ollamaGenerate(prompt: string): Promise<string> {
+async function generateReasoning(prompt: string, workload: "hyde" | "summarization" = "hyde"): Promise<string> {
   try {
-    const resp = await fetch(`${OLLAMA_URL}/api/generate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: HYDE_MODEL, prompt, stream: false, options: { temperature: 0.1, num_predict: 300 } }),
-      signal: AbortSignal.timeout(30000),
+    const result = await mcGenerate({
+      prompt,
+      workload,
+      temperature: 0.1,
+      maxTokens: 300,
     });
-    if (!resp.ok) return "";
-    const data = await resp.json();
-    return data.response?.trim() || "";
+    return result.content.trim();
   } catch { return ""; }
 }
 
@@ -123,7 +120,7 @@ Facts already found:
 ${factsSummary}
 
 What additional information would help answer the original question? Reply with 1-2 specific search terms.`;
-  const refined = await ollamaGenerate(prompt);
+  const refined = await generateReasoning(prompt, "hyde");
   return refined.replace(/"/g, "").trim().slice(0, 100) || originalQuery;
 }
 
@@ -184,7 +181,7 @@ Key findings:
 ${allResults.slice(0, 6).map(r => `• [${r.entity}.${r.key || "_"}] ${r.value.slice(0, 100)} (hop ${r.hop}, ${r.connection})`).join("\n")}
 
 Provide a 2-sentence answer to the question.`;
-  const reasoning = await ollamaGenerate(reasoningPrompt);
+  const reasoning = await generateReasoning(reasoningPrompt, "summarization");
   const summary = allResults.length > 0
     ? `${allResults.length} facts found across ${Math.max(...allResults.map(r => r.hop))} hops. ${reasoning}`
     : "No results found.";

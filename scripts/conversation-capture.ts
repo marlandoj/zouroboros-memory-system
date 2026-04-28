@@ -9,9 +9,10 @@
  * This extends memory capture beyond swarm tasks to ALL conversations.
  *
  * Usage:
- *   bun conversation-capture.ts                    # Process all new artifacts
+ *   bun conversation-capture.ts                    # Process last 24h (safe default)
  *   bun conversation-capture.ts --since 24h        # Only last 24 hours
  *   bun conversation-capture.ts --since 7d         # Only last 7 days
+ *   bun conversation-capture.ts --all              # Process all uncaptured artifacts
  *   bun conversation-capture.ts --dry-run           # Preview without storing
  *   bun conversation-capture.ts --stats             # Show capture statistics
  *   bun conversation-capture.ts --list              # List capturable files
@@ -28,13 +29,13 @@ import {
   resolveMatchingOpenLoops,
   upsertOpenLoop,
 } from "./continuation";
+import { generate as mcGenerate, embeddings as mcEmbeddings, modelHealthCheck, resolveConfiguredModel } from "./model-client";
 
 // --- Configuration ---
 const DB_PATH = process.env.ZO_MEMORY_DB || "/home/workspace/.zo/memory/shared-facts.db";
-const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434";
-const CAPTURE_MODEL = process.env.ZO_CAPTURE_MODEL || "qwen2.5:7b";
-const CAPTURE_FALLBACK_MODEL = "qwen2.5:3b";
-const EMBEDDING_MODEL = process.env.ZO_EMBEDDING_MODEL || "nomic-embed-text";
+const EMBEDDING_MODEL = process.env.ZO_EMBEDDING_MODEL || "text-embedding-3-small";
+const CAPTURE_MODEL = process.env.ZO_CAPTURE_MODEL || "openai:gpt-4o-mini";
+const CAPTURE_FALLBACK_MODEL = process.env.ZO_CAPTURE_FALLBACK_MODEL || process.env.ZO_MODEL_CAPTURE || "openai:gpt-4o-mini";
 const WORKSPACES_DIR = "/home/.z/workspaces";
 
 const MAX_FACTS_PER_CAPTURE = 20;
@@ -113,7 +114,7 @@ function getDb(): Database {
     CREATE TABLE IF NOT EXISTS fact_embeddings (
       fact_id TEXT PRIMARY KEY REFERENCES facts(id) ON DELETE CASCADE,
       embedding BLOB NOT NULL,
-      model TEXT DEFAULT 'nomic-embed-text',
+      model TEXT DEFAULT 'text-embedding-3-small',
       created_at INTEGER DEFAULT (strftime('%s', 'now'))
     );
   `);
@@ -203,14 +204,13 @@ function scanDirectory(dir: string, conId: string, artifacts: ArtifactFile[], si
   }
 }
 
-// --- Ollama ---
+// --- Model Integration (via model-client) ---
 
-async function checkModelAvailable(model: string): Promise<boolean> {
+async function checkModelAvailable(_model: string): Promise<boolean> {
   try {
-    const resp = await fetch(`${OLLAMA_URL}/api/tags`, { signal: AbortSignal.timeout(5000) });
-    if (!resp.ok) return false;
-    const data = await resp.json();
-    return data.models?.some((m: any) => m.name === model || m.name.startsWith(model + ":"));
+    const { provider } = resolveConfiguredModel("capture", _model);
+    const result = await modelHealthCheck(provider);
+    return result.available;
   } catch { return false; }
 }
 
@@ -235,20 +235,15 @@ ${transcript.slice(0, MAX_TRANSCRIPT_TOKENS)}
 ---`;
 
   try {
-    const resp = await fetch(`${OLLAMA_URL}/api/generate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model, prompt, stream: false,
-        options: { temperature: 0.1, num_predict: 2000 },
-        keep_alive: "24h",
-      }),
-      signal: AbortSignal.timeout(60000),
+    const result = await mcGenerate({
+      prompt,
+      workload: "extraction",
+      temperature: 0.1,
+      maxTokens: 2000,
+      json: true,
     });
 
-    if (!resp.ok) throw new Error(`Ollama returned ${resp.status}`);
-    const data = await resp.json();
-    const text = data.response?.trim() || "";
+    const text = result.content.trim();
 
     let jsonStr = text;
     const jsonMatch = text.match(/\[[\s\S]*\]/);
@@ -285,19 +280,12 @@ function validateDecay(d: string): DecayClass {
   return valid.includes(d as DecayClass) ? (d as DecayClass) : "stable";
 }
 
-// --- Embedding ---
+// --- Embedding (via model-client) ---
 
 async function getEmbedding(text: string): Promise<number[] | null> {
   try {
-    const resp = await fetch(`${OLLAMA_URL}/api/embeddings`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: EMBEDDING_MODEL, prompt: text.slice(0, 8000) }),
-      signal: AbortSignal.timeout(15000),
-    });
-    if (!resp.ok) return null;
-    const data = await resp.json();
-    return data.embedding;
+    const result = await mcEmbeddings(text.slice(0, 8000));
+    return result.embedding.length > 0 ? result.embedding : null;
   } catch { return null; }
 }
 
@@ -583,15 +571,17 @@ async function main() {
 conversation-capture — Workspace Artifact Memory Capture
 
 Usage:
-  bun conversation-capture.ts                    # Process all new artifacts
+  bun conversation-capture.ts                    # Process last 24h (safe default)
   bun conversation-capture.ts --since 24h        # Only last 24 hours
   bun conversation-capture.ts --since 7d         # Only last 7 days
-  bun conversation-capture.ts --dry-run           # Preview without storing
-  bun conversation-capture.ts --stats             # Show capture statistics
-  bun conversation-capture.ts --list              # List capturable files
+  bun conversation-capture.ts --all              # Process all uncaptured artifacts
+  bun conversation-capture.ts --dry-run          # Preview without storing
+  bun conversation-capture.ts --stats            # Show capture statistics
+  bun conversation-capture.ts --list             # List capturable files
 
 Options:
   --since <duration>   Filter by recency: 1h, 24h, 7d, 30d, 1w, 1m
+  --all                Process all uncaptured artifacts across all conversations
   --dry-run            Show extracted facts without storing
   --stats              Show capture statistics
   --list               List capturable artifact files
@@ -605,9 +595,19 @@ Options:
   }
 
   const dryRun = args.includes("--dry-run");
+  const captureAll = args.includes("--all");
   let sinceDate: Date | undefined;
   const sinceIdx = args.indexOf("--since");
   if (sinceIdx >= 0 && args[sinceIdx + 1]) sinceDate = parseSince(args[sinceIdx + 1]);
+
+  if (captureAll && sinceDate) {
+    console.error("Use either --all or --since <duration>, not both.");
+    process.exit(1);
+  }
+
+  if (!captureAll && !sinceDate) {
+    sinceDate = parseSince("24h");
+  }
 
   if (args.includes("--list") || args[0] === "list") {
     listArtifacts(sinceDate);
@@ -633,7 +633,7 @@ Options:
     process.exit(0);
   }
 
-  console.log(`Found ${newArtifacts.length} new artifacts to capture${sinceDate ? ` (since ${sinceDate.toISOString().slice(0, 10)})` : ""}`);
+  console.log(`Found ${newArtifacts.length} new artifacts to capture${captureAll ? " (full backlog sweep)" : sinceDate ? ` (since ${sinceDate.toISOString().slice(0, 10)})` : ""}`);
   console.log(`Mode: ${dryRun ? "DRY RUN" : "LIVE"}\n`);
 
   await processArtifacts(newArtifacts, dryRun);
