@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { generate as llmGenerate } from "./model-client";
 /**
  * episode-summarizer.ts — Recursive Episode Summarization for Long Conversations
  * MEM-002: Recursive Episode Summarization
@@ -18,8 +19,6 @@ import { readFileSync, writeFileSync, existsSync } from "fs";
 import { join } from "path";
 
 const DB_PATH = process.env.ZO_MEMORY_DB || "/home/workspace/.zo/memory/shared-facts.db";
-const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434";
-const SUMMARIZE_MODEL = process.env.ZO_SUMMARIZE_MODEL || "qwen2.5:7b";
 const EPISODE_WINDOW = 14 * 24 * 3600; // 14 days in seconds
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -76,7 +75,7 @@ function getDb(): Database {
   return db;
 }
 
-// ─── Ollama summarization ─────────────────────────────────────────────────────
+// ─── Model-routed summarization ───────────────────────────────────────────────
 
 async function generateSummary(episodes: EpisodeForCompression[]): Promise<{ summary: string; keyDecisions: string[]; keyOutcomes: string[] }> {
   const prompt = `You are compressing a sequence of conversation episodes into a single summary.
@@ -97,22 +96,13 @@ Respond ONLY with valid JSON (no markdown, no explanation):
   "keyOutcomes": ["outcome 1", "outcome 2"]
 }`;
 
-  const resp = await fetch(`${OLLAMA_URL}/api/generate`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: SUMMARIZE_MODEL,
-      prompt,
-      stream: false,
-      keep_alive: "1h",
-      options: { temperature: 0.3, num_predict: 400 },
-    }),
+  const result = await llmGenerate({
+    prompt,
+    workload: "summarization",
+    temperature: 0.3,
+    maxTokens: 400,
   });
-
-  if (!resp.ok) throw new Error(`Ollama error: ${resp.status}`);
-
-  const data = await resp.json() as { response: string };
-  const raw = data.response.trim();
+  const raw = result.content;
   const jsonMatch = raw.match(/\{[\s\S]*\}/);
   if (!jsonMatch) throw new Error(`Failed to parse summary JSON: ${raw.slice(0, 200)}`);
 
@@ -153,7 +143,7 @@ export async function compressEpisodes(
   // Sort oldest first
   episodes.sort((a, b) => a.happenedAt - b.happenedAt);
 
-  // Generate compressed summary via Ollama
+  // Generate compressed summary via the configured summarization model
   const { summary, keyDecisions, keyOutcomes } = await generateSummary(episodes);
 
   // Compute compression stats
