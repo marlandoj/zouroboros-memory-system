@@ -1,8 +1,8 @@
 // =============================================================================
 // model-client.ts — Unified model provider abstraction
 //
-// Replaces direct Ollama /api/generate and /api/embeddings calls with a clean
-// interface that routes to Ollama, OpenAI, or Anthropic based on env vars.
+// Replaces direct provider calls with a clean interface that routes to OpenAI
+// or Anthropic based on env vars.
 //
 // Usage:
 //   import { generate, embeddings, modelHealthCheck } from "./model-client";
@@ -12,7 +12,7 @@
 //     workload: "gate",
 //   });
 //
-// Env vars by workload (all optional — defaults to Ollama bare model names):
+// Env vars by workload (all optional — defaults to OpenAI unless overridden):
 //   ZO_MODEL_GATE         → memory gate classifier
 //   ZO_MODEL_HYDE         → HyDE query expansion
 //   ZO_MODEL_EXTRACTION   → fact extraction
@@ -23,16 +23,15 @@
 //   ZO_MODEL_EMBEDDING    → embedding model
 //
 // Model spec format: "provider:model-id"
-//   ollama:qwen2.5:7b     → Ollama
 //   openai:gpt-4o-mini    → OpenAI
 //   anthropic:haiku        → Anthropic (via Zo OAuth)
 //
-//   Bare names (no colon) default to Ollama: "qwen2.5:7b" → "ollama:qwen2.5:7b"
+//   Bare names default to a provider inferred from the model id.
 //
 // Cost tracking: every call returns { content, latency_ms, provider, model, cost_usd }
 // =============================================================================
 
-export type Provider = "ollama" | "openai" | "anthropic";
+export type Provider = "openai" | "anthropic";
 export type Workload =
   | "gate" | "hyde" | "extraction"
   | "summarization" | "briefing"
@@ -89,7 +88,7 @@ const WORKLOAD_MAX_TOKENS: Record<Workload, number> = {
 
 // ─── Model spec parser ────────────────────────────────────────────────────────
 
-const ALL_PROVIDERS: Provider[] = ["ollama", "openai", "anthropic"];
+const ALL_PROVIDERS: Provider[] = ["openai", "anthropic"];
 
 const KNOWN_OPENAI_MODELS = new Set([
   "gpt-4o", "gpt-4o-mini", "gpt-4o-large", "gpt-4-turbo", "gpt-4",
@@ -99,20 +98,20 @@ const KNOWN_OPENAI_MODELS = new Set([
 ]);
 
 function parseModelSpec(spec: string): { provider: Provider; model: string } {
-  if (!spec || typeof spec !== "string") return { provider: "ollama", model: "qwen2.5:1.5b" };
+  if (!spec || typeof spec !== "string") return { provider: "openai", model: "gpt-4o-mini" };
   const colon = spec.indexOf(":");
   if (colon < 0) {
     // Bare name — check if it's a known OpenAI model
     const base = spec.split("/").pop() || spec;
     if (KNOWN_OPENAI_MODELS.has(base)) return { provider: "openai", model: base };
     if (KNOWN_OPENAI_MODELS.has(base.replace("-", "_").replace("_", "-"))) return { provider: "openai", model: base };
-    return { provider: "ollama", model: spec };
+    return { provider: "openai", model: base };
   }
   const prefix = spec.slice(0, colon).toLowerCase();
   if (ALL_PROVIDERS.includes(prefix as Provider)) {
     return { provider: prefix as Provider, model: spec.slice(colon + 1) };
   }
-  return { provider: "ollama", model: spec };
+  return { provider: "openai", model: spec.slice(colon + 1) || spec };
 }
 
 // ─── Workload resolver ────────────────────────────────────────────────────────
@@ -148,74 +147,27 @@ function loadModelEnv(): void {
   } catch { /* no model.env */ }
 }
 
+const DEFAULT_MODELS: Record<Workload, string> = {
+  gate: "openai:gpt-4o-mini",
+  hyde: "openai:gpt-4o-mini",
+  extraction: "openai:gpt-4o-mini",
+  summarization: "openai:gpt-4o-mini",
+  briefing: "openai:gpt-4o-mini",
+  capture: "openai:gpt-4o-mini",
+  conversation: "openai:gpt-4o-mini",
+  embedding: "openai:text-embedding-3-small",
+};
+
 function resolveModel(workload: Workload, explicitModel?: string): { provider: Provider; model: string } {
   loadModelEnv();
   const envKey = WORKLOAD_ENV[workload];
   const spec = explicitModel || process.env[envKey] || "";
   if (spec) return parseModelSpec(spec);
-  const defaults: Record<Workload, string> = {
-    gate: "qwen2.5:1.5b",
-    hyde: "qwen2.5:1.5b",
-    extraction: "qwen2.5:7b",
-    summarization: "qwen2.5:7b",
-    briefing: "qwen2.5:1.5b",
-    capture: "qwen2.5:3b",
-    conversation: "qwen2.5:1.5b",
-    embedding: "nomic-embed-text",
-  };
-  return parseModelSpec(defaults[workload]);
+  return parseModelSpec(DEFAULT_MODELS[workload]);
 }
 
-// ─── Ollama ───────────────────────────────────────────────────────────────────
-
-const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434";
-
-async function ollamaGenerate(opts: GenerateOptions): Promise<GenerateResult> {
-  const start = Date.now();
-  const { model } = resolveModel(opts.workload, opts.model);
-  const temperature = opts.temperature ?? WORKLOAD_TEMP[opts.workload];
-  const maxTokens = opts.maxTokens ?? WORKLOAD_MAX_TOKENS[opts.workload];
-
-  const body: Record<string, unknown> = {
-    model,
-    prompt: opts.prompt,
-    stream: false,
-    keep_alive: "24h",
-    options: { temperature, num_predict: maxTokens },
-  };
-  if (opts.system) body.system = opts.system;
-  if (opts.json) {
-    body.options = { ...(body.options as Record<string, unknown>), "temperature": temperature, "stop": ["```"] };
-    body.template = opts.system || undefined;
-  }
-
-  const resp = await fetch(`${OLLAMA_URL}/api/generate`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(60000),
-  });
-  if (!resp.ok) throw new Error(`[ollama/${model}] Ollama error ${resp.status}: ${await resp.text()}`);
-
-  const data = await resp.json() as { response?: string; context?: unknown };
-  const raw = (data.response || "").trim();
-  const latency_ms = Date.now() - start;
-
-  return { content: raw, latency_ms, provider: "ollama", model, cost_usd: 0 };
-}
-
-async function ollamaEmbeddings(text: string, explicitModel?: string): Promise<EmbedResult> {
-  const { provider, model } = resolveModel("embedding", explicitModel);
-  const resp = await fetch(`${OLLAMA_URL}/api/embeddings`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model, prompt: text }),
-    signal: AbortSignal.timeout(60000),
-  });
-  if (!resp.ok) throw new Error(`[ollama/${model}] Ollama embeddings error ${resp.status}`);
-  const data = await resp.json() as { embedding?: number[] };
-  const latency_ms = 0;
-  return { embedding: data.embedding || [], latency_ms, provider, model, cost_usd: 0 };
+export function resolveConfiguredModel(workload: Workload, explicitModel?: string): { provider: Provider; model: string } {
+  return resolveModel(workload, explicitModel);
 }
 
 // ─── OpenAI ───────────────────────────────────────────────────────────────────
@@ -342,10 +294,6 @@ async function anthropicEmbeddings(_text: string): Promise<EmbedResult> {
 export async function modelHealthCheck(provider: Provider): Promise<HealthResult> {
   const start = Date.now();
   try {
-    if (provider === "ollama") {
-      const resp = await fetch(`${OLLAMA_URL}/api/tags`, { signal: AbortSignal.timeout(5000) });
-      return { available: resp.ok, latency_ms: Date.now() - start, error: resp.ok ? undefined : `HTTP ${resp.status}` };
-    }
     if (provider === "openai" && OPENAI_TOKEN) {
       const resp = await fetch("https://api.openai.com/v1/models", {
         headers: { "Authorization": `Bearer ${OPENAI_TOKEN}` },
@@ -402,24 +350,13 @@ export async function generate(opts: GenerateOptions): Promise<GenerateResult> {
   let result: GenerateResult;
   try {
     switch (provider) {
-      case "ollama":    result = await ollamaGenerate(opts); break;
       case "openai":    result = await openaiGenerate(opts); break;
       case "anthropic": result = await anthropicGenerate(opts); break;
     }
   } catch (err) {
-    // Fallback to Ollama with default model if remote provider fails
-    if (provider !== "ollama") {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[model-client] ${provider} workload=${opts.workload} failed, falling back to ollama: ${msg}`);
-      const defaults: Record<Workload, string> = {
-        gate: "qwen2.5:1.5b", hyde: "qwen2.5:1.5b", extraction: "qwen2.5:7b",
-        summarization: "qwen2.5:7b", briefing: "qwen2.5:1.5b",
-        capture: "qwen2.5:3b", conversation: "qwen2.5:1.5b", embedding: "nomic-embed-text",
-      };
-      result = await ollamaGenerate({ ...opts, model: `ollama:${defaults[opts.workload]}` });
-    } else {
-      throw err;
-    }
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[model-client] ${provider} workload=${opts.workload} failed: ${msg}`);
+    throw err;
   }
   logCall(result, opts.workload);
   return result;
@@ -428,7 +365,6 @@ export async function generate(opts: GenerateOptions): Promise<GenerateResult> {
 export async function embeddings(text: string, explicitModel?: string): Promise<EmbedResult> {
   const { provider, model } = resolveModel("embedding", explicitModel);
   switch (provider) {
-    case "ollama":    { const r = await ollamaEmbeddings(text, model); logEmbedCall(r); return r; }
     case "openai":    { const r = await openaiEmbeddings(text, model); logEmbedCall(r); return r; }
     case "anthropic": return anthropicEmbeddings(text);
   }

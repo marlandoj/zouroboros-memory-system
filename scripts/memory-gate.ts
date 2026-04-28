@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 /**
- * memory-gate.ts — Ollama-powered memory relevance filter
+ * memory-gate.ts — Model-routed memory relevance filter
  * 
- * Takes a user message, uses a local Ollama model to:
+ * Takes a user message, uses the configured gate model to:
  * 1. Decide if the message needs memory context (yes/no)
  * 2. Extract search keywords if yes
  * 3. Runs memory hybrid search and outputs results
@@ -30,7 +30,7 @@ interface GateResponse {
   reason: string;
 }
 
-async function callOllama(message: string): Promise<GateResponse> {
+async function classifyMemoryNeed(message: string): Promise<GateResponse> {
   const prompt = `You are a classifier. Given a user message, decide if it would benefit from retrieving stored memory/context from previous conversations.
 
 Answer ONLY with valid JSON, no other text.
@@ -58,7 +58,7 @@ User: "check the current zo resources"
 Now classify this message:
 User: "${message.replace(/"/g, '\\"').replace(/\n/g, ' ')}"`;
 
-  // Route through model-client: picks up ZO_MODEL_GATE from env, defaults to ollama:qwen2.5:1.5b
+  // Route through model-client: picks up ZO_MODEL_GATE from env, defaults to openai:gpt-4o-mini
   const result = await generate({
     prompt,
     workload: "gate",
@@ -191,6 +191,7 @@ export async function injectSessionBriefing(personaSlug: string): Promise<string
     const parts: string[] = [
       `[Session Briefing — ${personaSlug}${effectiveDomain ? ` (${effectiveDomain})` : ""} — ${result.latency_ms}ms]`,
       result.briefing,
+      `One Thing: ${result.one_thing}`,
     ];
     if (result.active_items.length > 0) {
       parts.push(`Open items: ${result.active_items.join("; ")}`);
@@ -229,10 +230,10 @@ export async function shouldInjectMemory(taskText: string): Promise<GateDecision
     return { inject: true, method: "keyword_heuristic", latency_ms: Date.now() - start };
   }
 
-  // Tier 3: Ollama classifier (200ms timeout)
+  // Tier 3: configured LLM classifier (200ms timeout)
   try {
     const gate = await Promise.race([
-      callOllama(taskText),
+      classifyMemoryNeed(taskText),
       new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error("gate_timeout")), 200)
       ),
@@ -360,7 +361,7 @@ async function main() {
       }
     }
 
-    // Keyword heuristic: deterministic pre-check before Ollama
+    // Keyword heuristic: deterministic pre-check before the classifier
     const hasMemoryKw = KEYWORD_MEMORY_PATTERNS.some(p => p.test(message));
     const hasSkipKw = KEYWORD_SKIP_PATTERNS.some(p => p.test(message));
 
@@ -381,8 +382,8 @@ async function main() {
       }
     }
 
-    // Ollama classifier (fallback for ambiguous cases)
-    const gate = await callOllama(message);
+    // Configured LLM classifier (fallback for ambiguous cases)
+    const gate = await classifyMemoryNeed(message);
 
     if (!gate.needs_memory) {
       // No memory needed — exit silently

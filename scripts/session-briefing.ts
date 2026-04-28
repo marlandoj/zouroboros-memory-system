@@ -26,6 +26,7 @@ interface SessionBriefing {
   persona: string;
   domain: string | null;
   briefing: string;
+  one_thing: string;
   active_items: string[];
   recent_episodes: string[];
   inherited_facts: string[];
@@ -211,6 +212,82 @@ Respond with ONLY the briefing text, no headers or bullets.`;
   }
 }
 
+// ── Step 6: One Thing Synthesis ────────────────────────────────────────────
+//
+// Picks ONE concrete next action from available context. Scoring rubric:
+// momentum > blocked > closest-to-done > urgency. Falsifies cleanly: if no
+// signal, returns "What would you like to work on?" rather than generic filler.
+//
+// Specificity bar: output MUST reference a concrete artifact (file path,
+// function name, command, ticket ID, URL, or backtick code reference).
+
+const FALSIFY_MSG = "What would you like to work on?";
+
+const SPECIFICITY_PATTERN =
+  /(`[^`]+`|\/[\w./-]+\.\w+|[\w-]+\.(ts|js|py|md|tsx|jsx|sql|sh|json|yaml|yml)|[a-z][a-zA-Z0-9]+\([^)]*\)|[a-z]+_[a-z_]+|[A-Z][a-zA-Z]+[A-Z][a-zA-Z]+|#\d+|https?:\/\/\S+)/;
+
+export function isSpecific(line: string): boolean {
+  if (!line || line.trim() === FALSIFY_MSG) return true; // falsify is acceptable
+  return SPECIFICITY_PATTERN.test(line);
+}
+
+async function synthesizeOneThing(
+  persona: string,
+  domain: string | null,
+  vaultContext: string[],
+  episodes: string[],
+  openLoops: string[],
+  inheritedFacts: string[],
+): Promise<string> {
+  const haveSignal =
+    vaultContext.length > 0 ||
+    episodes.length > 0 ||
+    openLoops.length > 0 ||
+    inheritedFacts.length > 0;
+
+  if (!haveSignal) return FALSIFY_MSG;
+
+  const contextBlock = [
+    openLoops.length > 0 ? `OPEN ITEMS:\n${openLoops.map(o => `  - ${o}`).join("\n")}` : "",
+    episodes.length > 0 ? `RECENT ACTIVITY:\n${episodes.map(e => `  - ${e}`).join("\n")}` : "",
+    vaultContext.length > 0 ? `VAULT FILES:\n${vaultContext.map(v => `  - ${v}`).join("\n")}` : "",
+    inheritedFacts.length > 0 ? `CROSS-PERSONA:\n${inheritedFacts.map(f => `  - ${f}`).join("\n")}` : "",
+  ].filter(Boolean).join("\n\n");
+
+  const prompt = `You are picking the SINGLE most important next action for the "${persona}" persona${domain ? ` (domain: ${domain})` : ""}.
+
+Scoring rubric (highest priority first):
+1. MOMENTUM — work that just made progress and has obvious next step
+2. BLOCKED — work waiting on a decision/input that you can unblock
+3. CLOSEST-TO-DONE — high-priority items near completion
+4. URGENCY — time-sensitive items
+
+CONTEXT:
+${contextBlock}
+
+OUTPUT RULES:
+- Respond with ONE sentence (max 25 words).
+- MUST reference a concrete artifact: a file path, function name, command, ticket ID, URL, or backtick code reference.
+- Do NOT say "continue working on X" or "review the Y project" — those are generic.
+- If no item has enough signal to recommend specifically, respond with EXACTLY: ${FALSIFY_MSG}
+- Voice: match "${persona}" persona's tone (formal/precise for alaric, oracular for ai-oracle, etc.).
+
+Respond with the action only, no preamble.`;
+
+  try {
+    const result = await mcGenerate({
+      prompt,
+      workload: "briefing",
+      temperature: 0.2,
+      maxTokens: 80,
+    });
+    const line = result.content.trim().split("\n")[0].trim();
+    return line || FALSIFY_MSG;
+  } catch {
+    return FALSIFY_MSG;
+  }
+}
+
 // ── Main Pipeline ──────────────────────────────────────────────────────────
 
 export async function generateBriefing(
@@ -261,15 +338,17 @@ export async function generateBriefing(
     const vaultContext = allVault.slice(0, 8);
     const domainLabel = multiDomains.join("+");
 
-    const briefing = await synthesize(
-      persona, domainLabel, vaultContext, episodes, openLoops, inheritedFacts, maxTokens,
-    );
+    const [briefing, one_thing] = await Promise.all([
+      synthesize(persona, domainLabel, vaultContext, episodes, openLoops, inheritedFacts, maxTokens),
+      synthesizeOneThing(persona, domainLabel, vaultContext, episodes, openLoops, inheritedFacts),
+    ]);
 
     const latency_ms = Math.round(performance.now() - start);
     return {
       persona,
       domain: domainLabel,
       briefing,
+      one_thing,
       active_items: openLoops,
       recent_episodes: episodes,
       inherited_facts: inheritedFacts,
@@ -294,9 +373,10 @@ export async function generateBriefing(
     Promise.resolve(getInheritedFacts(persona, domain, 3, dbPath)),
   ]);
 
-  const briefing = await synthesize(
-    persona, domain ?? null, vaultContext, episodes, openLoops, inheritedFacts, maxTokens,
-  );
+  const [briefing, one_thing] = await Promise.all([
+    synthesize(persona, domain ?? null, vaultContext, episodes, openLoops, inheritedFacts, maxTokens),
+    synthesizeOneThing(persona, domain ?? null, vaultContext, episodes, openLoops, inheritedFacts),
+  ]);
 
   const latency_ms = Math.round(performance.now() - start);
 
@@ -304,6 +384,7 @@ export async function generateBriefing(
     persona,
     domain: domain ?? null,
     briefing,
+    one_thing,
     active_items: openLoops,
     recent_episodes: episodes,
     inherited_facts: inheritedFacts,
@@ -351,6 +432,7 @@ if (import.meta.main) {
     if (result.domain) console.log(`Domain: ${result.domain}`);
     console.log(`Generated: ${new Date(result.generated_at * 1000).toISOString()} (${result.latency_ms}ms)\n`);
     console.log(result.briefing);
+    console.log(`\nOne Thing: ${result.one_thing}`);
 
     if (result.active_items.length > 0) {
       console.log(`\n--- Open Items (${result.active_items.length}) ---`);

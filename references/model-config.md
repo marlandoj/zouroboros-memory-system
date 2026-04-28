@@ -18,8 +18,8 @@ ZO_MODEL_EXTRACTION="openai:gpt-4o-mini"
 ZO_MODEL_SUMMARIZATION="openai:gpt-4o-mini"
 ZO_MODEL_CAPTURE="openai:gpt-4o-mini"
 ZO_MODEL_CONVERSATION="openai:gpt-4o-mini"
-ZO_MODEL_HYDE="ollama:qwen2.5:1.5b"
-ZO_MODEL_EMBEDDING="ollama:nomic-embed-text"
+ZO_MODEL_HYDE="openai:gpt-4o-mini"
+ZO_MODEL_EMBEDDING="openai:text-embedding-3-small"
 ```
 
 Values follow `provider:model` syntax. Supported providers: `ollama`, `openai`, `anthropic`.
@@ -30,7 +30,7 @@ Provider credentials come from process environment:
 
 - `OPENAI_API_KEY` — required when any `ZO_MODEL_*` uses `openai:...`
 - `ANTHROPIC_API_KEY` — required when any `ZO_MODEL_*` uses `anthropic:...`
-- Ollama requires no key but expects a local server at `OLLAMA_URL` (default `http://localhost:11434`)
+- `OLLAMA_URL` is only needed if you intentionally override a workload back to `ollama:...`
 
 ### Deployment note for `memory-gate` service
 
@@ -48,17 +48,14 @@ update_user_service({
 });
 ```
 
-Omitting a key here causes `openaiGenerate()` to throw at request time, which triggers
-the fallback to Ollama. See the fallback logging in `model-client.ts` to detect this
-silently-degraded state in `/dev/shm/memory-gate*.log`.
+Omitting a key here causes `openaiGenerate()` or `openaiEmbeddings()` to throw at request
+time. The current default configuration is OpenAI-first and does not silently fall back
+to Ollama.
 
 ## Fallback behavior
 
-If a remote provider throws (missing key, rate limit, network error), `generate()`
-falls back to Ollama with a workload-appropriate default model. Failures are logged
-to stderr prefixed with `[model-client]` so the degradation is visible in service logs.
-
-If Ollama itself fails, the error is re-thrown (no secondary fallback).
+If a provider throws (missing key, rate limit, network error), the call fails fast and
+the error is logged to stderr prefixed with `[model-client]`.
 
 ## Telemetry
 
