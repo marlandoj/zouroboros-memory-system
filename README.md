@@ -1,8 +1,8 @@
-> **⚠️ DEPRECATED** — This repository has been archived. All code has been migrated to the [Zouroboros monorepo](https://github.com/marlandoj/Zouroboros) under `packages/memory/`. Please open issues and PRs there.
+# Zouroboros Memory System
+
+> **Status (2026-04-27):** This repository is the **canonical home for the runtime skill** that powers Zo Computer's memory daemon, gate hook, capture pipeline, knowledge graph, vault, and persona memory files. The [Zouroboros monorepo](https://github.com/marlandoj/zouroboros) `packages/memory/` is the **library** used by npm consumers and bench adapters; it currently lags this skill on graph/community/vault features. A future consolidation pass will reconcile the two — see [issues](https://github.com/marlandoj/zouroboros-memory-system/issues) for status. Until then, file runtime/skill issues here and library/SDK issues against the monorepo.
 
 ---
-
-# Zouroboros Memory System
 
 > Give your Zo Computer personas persistent memory with semantic understanding, a knowledge graph, and automatic fact extraction. All local, no API costs.
 >
