@@ -389,6 +389,122 @@ function knowledgeGaps(db: Database): void {
   }
 }
 
+// --- Auto-link Orphans (token-based wikilink backfill) ---
+
+const STOPLIST = new Set([
+  "the","and","with","from","into","that","this","then","than","over","under",
+  "true","false","null","none","value","fact","test","none","when","what","just",
+  "have","been","will","does","done","also","they","them","were","your","yours",
+  "object","string","number","array","null","item","items","data","info","note",
+  "active","status","working","complete","completed","running","start","stop",
+  "default","config","setup","apply","apply","using","each","next","step",
+]);
+
+function tokenize(s: string | null | undefined): string[] {
+  if (!s) return [];
+  const tokens = new Set<string>();
+  // Hyphenated/dotted/underscore identifiers preserved whole AND split into parts
+  for (const m of s.matchAll(/[A-Za-z][A-Za-z0-9]*(?:[-_.][A-Za-z0-9]+)+/g)) {
+    const whole = m[0].toLowerCase();
+    tokens.add(whole);
+    for (const part of whole.split(/[-_.]/)) tokens.add(part);
+  }
+  // Plain words
+  for (const m of s.matchAll(/[A-Za-z][A-Za-z0-9]{3,}/g)) {
+    tokens.add(m[0].toLowerCase());
+  }
+  // Filter
+  return [...tokens].filter(t => t.length >= 4 && !STOPLIST.has(t));
+}
+
+function autoLinkOrphans(db: Database, opts: { dryRun: boolean; maxLinksPerOrphan: number }): void {
+  const allFacts = db.prepare("SELECT id, entity, key, value, text FROM facts").all() as any[];
+  const allLinks = db.prepare("SELECT source_id, target_id FROM fact_links").all() as any[];
+
+  const adj = new Map<string, number>();
+  for (const f of allFacts) adj.set(f.id, 0);
+  for (const l of allLinks) {
+    adj.set(l.source_id, (adj.get(l.source_id) || 0) + 1);
+    adj.set(l.target_id, (adj.get(l.target_id) || 0) + 1);
+  }
+
+  const orphans = allFacts.filter(f => (adj.get(f.id) || 0) === 0);
+  const linked = allFacts.filter(f => (adj.get(f.id) || 0) > 0);
+  console.log(`Orphans: ${orphans.length}, linked candidates: ${linked.length}`);
+
+  // Build inverted index: token -> [{ factId, degree }]
+  const tokenIndex = new Map<string, Array<{ id: string; degree: number; entity: string; key: string }>>();
+  for (const f of linked) {
+    const tokens = new Set([
+      ...tokenize(f.entity),
+      ...tokenize(f.key),
+      ...tokenize(f.value),
+    ]);
+    for (const t of tokens) {
+      if (!tokenIndex.has(t)) tokenIndex.set(t, []);
+      tokenIndex.get(t)!.push({ id: f.id, degree: adj.get(f.id) || 0, entity: f.entity, key: f.key || "_" });
+    }
+  }
+
+  const insertStmt = db.prepare(`
+    INSERT OR IGNORE INTO fact_links (source_id, target_id, relation, weight)
+    VALUES (?, ?, 'auto_linked', 0.5)
+  `);
+
+  let totalLinks = 0;
+  let orphansLinked = 0;
+
+  const writes: Array<[string, string]> = [];
+  for (const orphan of orphans) {
+    const tokens = new Set([
+      ...tokenize(orphan.entity),
+      ...tokenize(orphan.key),
+      ...tokenize(orphan.value),
+      ...tokenize(orphan.text),
+    ]);
+
+    // Score candidate target facts: count token matches, prefer high-degree hubs
+    const scored = new Map<string, { score: number; degree: number; entity: string; key: string }>();
+    for (const t of tokens) {
+      const candidates = tokenIndex.get(t);
+      if (!candidates) continue;
+      // Skip noisy tokens (appear in >50 linked facts) — they're not discriminating
+      if (candidates.length > 50) continue;
+      for (const c of candidates) {
+        if (c.entity === orphan.entity) continue;
+        const cur = scored.get(c.id);
+        if (cur) cur.score++;
+        else scored.set(c.id, { score: 1, degree: c.degree, entity: c.entity, key: c.key });
+      }
+    }
+
+    // Require ≥2 token-overlap to avoid spurious single-token noise
+    const ranked = [...scored.entries()]
+      .filter(([, v]) => v.score >= 2)
+      .sort((a, b) => b[1].score - a[1].score || b[1].degree - a[1].degree)
+      .slice(0, opts.maxLinksPerOrphan);
+
+    if (ranked.length === 0) continue;
+    orphansLinked++;
+
+    for (const [targetId, info] of ranked) {
+      writes.push([orphan.id, targetId]);
+      totalLinks++;
+      console.log(`  [${orphan.entity}.${orphan.key || "_"}] -> [${info.entity}.${info.key}] (score=${info.score}, deg=${info.degree})`);
+    }
+  }
+
+  if (!opts.dryRun && writes.length > 0) {
+    const tx = db.transaction(() => {
+      for (const [src, tgt] of writes) insertStmt.run(src, tgt);
+    });
+    tx();
+  }
+
+  console.log(`\n${opts.dryRun ? "[DRY-RUN] Would link" : "Linked"} ${orphansLinked}/${orphans.length} orphans (${totalLinks} new edges)`);
+  console.log(`Untouched orphans: ${orphans.length - orphansLinked} (no token overlap with any linked fact)`);
+}
+
 // --- Community Summarization (GraphRAG Edge 2024) ---
 
 interface Component {
@@ -605,7 +721,12 @@ Commands:
   show                  Show links for an entity or fact ID
   find-connections      Find shortest path between two entities
   knowledge-gaps        Analyze orphans, dead ends, and clusters
+  auto-link-orphans     Backfill links from orphan facts via token overlap
   community-summarize   Generate GraphRAG summaries for clusters ≥ min-size
+
+Auto-link-orphans options:
+  --max-links <n>       Max edges per orphan (default: 2)
+  --dry-run             Preview matches without writing
 
 Community-summarize options:
   --min-size <n>        Minimum component size to summarize (default: 5)
@@ -707,6 +828,14 @@ async function main() {
 
     case "knowledge-gaps": {
       knowledgeGaps(db);
+      break;
+    }
+
+    case "auto-link-orphans": {
+      autoLinkOrphans(db, {
+        dryRun: process.argv.includes("--dry-run"),
+        maxLinksPerOrphan: parseInt(flags["max-links"]) || 2,
+      });
       break;
     }
 
