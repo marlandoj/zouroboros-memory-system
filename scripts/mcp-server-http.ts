@@ -525,14 +525,7 @@ function createSessionServer(requestedSessionId?: string): { transport: WebStand
   });
 
   const transport = new WebStandardStreamableHTTPServerTransport({
-    sessionIdGenerator: () => requestedSessionId || randomUUID(),
-    onsessioninitialized: (sessionId) => {
-      console.error(`[zo-memory-mcp] Session initialized: ${sessionId}${requestedSessionId ? " (re-created)" : ""}`);
-    },
-    onsessionclosed: (sessionId) => {
-      console.error(`[zo-memory-mcp] Session closed: ${sessionId}`);
-      sessions.delete(sessionId);
-    },
+    sessionIdGenerator: undefined,
   });
 
   server.connect(transport);
