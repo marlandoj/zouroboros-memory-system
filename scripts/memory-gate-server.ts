@@ -20,13 +20,23 @@ import { generate, modelHealthCheck, resolveConfiguredModel } from "./model-clie
 import { extractWikilinks } from "./wikilink-utils";
 import { getPersonaDomain } from "./domain-map.ts";
 import { generateBriefing } from "./session-briefing.ts";
-import { logGateDecision } from "./scorecard.ts";
+import { logGateDecision, logRetrieval } from "./scorecard.ts";
 import { ensureBackendDb, getBackendStatus } from "./ensure-backend.ts";
 import { existsSync, readFileSync } from "fs";
 import { synthesizeAnswer, generateFeedbackFacts } from "./mimir-synthesize.ts";
+import { generateTraceId, writeTraceId } from "./trace.js";
 
 const MEMORY_SCRIPT = "/home/workspace/Skills/zo-memory-system/scripts/memory.ts";
 const MAX_RESULTS = 5;
+
+// Derive a chunk count from a formatted retrieval result string for telemetry.
+// searchMemory emits "Found N results"; continuation/other surfaces fall back to
+// counting non-empty lines.
+function countChunks(s: string): number {
+  const m = s.match(/Found (\d+) results/);
+  if (m) return parseInt(m[1], 10);
+  return s.split("\n").filter((l) => l.trim().length > 0).length;
+}
 const PORT = parseInt(process.env.PORT || "7820");
 const startedAt = Date.now();
 
@@ -64,6 +74,21 @@ function resolveBackend(persona?: string): string | null {
   }
   return config.default;
 }
+
+// --- Collaboration contract (marlandoj profile §8 headlines) ---
+// Fires on the same first-call-per-session sentinel as the briefing.
+// Source of truth: /home/workspace/Notes/marlandoj-collaboration-profile.md
+
+const COLLAB_CONTRACT_BLOCK = [
+  "[Collaboration Contract — marlandoj]",
+  "1. Terse and load-bearing — match ~65c median.",
+  "2. Verification is a deliverable — cite tests/eval/gap-audit, not 'it compiled'.",
+  "3. Default to action — lead with the result; 'yes proceed' is 5x more common than corrections.",
+  "4. Respect 'wait' / 'stop' / 'hold' — never barrel through.",
+  "5. No ceremony — no preludes, no end-of-response diff recap.",
+  "Lexicon: swarm, gate, eval, gap audit, phase N, Mimir, persona — don't paraphrase.",
+  "Full profile: Notes/marlandoj-collaboration-profile.md",
+].join("\n");
 
 // --- Briefing sentinel (same logic as CLI, in-memory for daemon) ---
 
@@ -121,8 +146,8 @@ function getSearchDb(dbPath: string): Sqlite {
 function inlineFtsSearch(query: string, dbPath: string, limit: number): string {
   try {
     const db = getSearchDb(dbPath);
-    const terms = query.split(/\s+/)
-      .map(w => w.replace(/[^\w-]/g, "").trim())
+    const terms = query.split(/[\s-]+/)
+      .map(w => w.replace(/[^\w]/g, "").trim())
       .filter(w => w.length > 1);
     if (terms.length === 0) return "";
     const ftsQ = terms.map(w => `${w}*`).join(" OR ");
@@ -269,6 +294,7 @@ interface GateResult {
   output: string;
   latency_ms: number;
   backend?: string;
+  trace_id?: string;
 }
 
 
@@ -299,7 +325,7 @@ async function postProcessMimir(
   }
 }
 
-async function handleGate(req: GateRequest): Promise<GateResult> {
+async function handleGate(req: GateRequest, traceId?: string): Promise<GateResult> {
   const start = Date.now();
   const { message, persona } = req;
   let output = "";
@@ -317,14 +343,16 @@ async function handleGate(req: GateRequest): Promise<GateResult> {
   ensureBackendDb(dbPath);
 
   try {
-    // Briefing injection (first call per persona per session)
+    // Briefing + collaboration contract injection (first call per persona per session)
     if (persona && !isBriefingFresh(persona)) {
+      // Contract fires unconditionally on first call — even if briefing has no content.
+      output += COLLAB_CONTRACT_BLOCK + "\n\n";
+      markBriefingSentinel(persona);
       try {
         const domain = getPersonaDomain(persona);
         const effectiveDomain = domain === "shared" || domain === "personal" ? undefined : domain;
         const briefingResult = await generateBriefing(persona, effectiveDomain, 500, dbPath);
         if (briefingResult.briefing && !briefingResult.briefing.startsWith("No recent activity")) {
-          markBriefingSentinel(persona);
           const parts: string[] = [
             `[Session Briefing — ${persona}${effectiveDomain ? ` (${effectiveDomain})` : ""} — ${briefingResult.latency_ms}ms]`,
             briefingResult.briefing,
@@ -347,6 +375,7 @@ async function handleGate(req: GateRequest): Promise<GateResult> {
       if (continuationResults && !continuationResults.includes("No continuation context found")) {
         output += continuationResults;
         logGateDecision({ exitCode: 0, method: "continuation", memoryFound: true, persona: persona ?? undefined, latencyMs: Date.now() - start });
+        logRetrieval({ query: message, chunksReturned: countChunks(continuationResults), method: "continuation", persona: persona ?? undefined, latencyMs: Date.now() - start });
         output = await postProcessMimir(persona, message, output, dbPath);
         return { exit_code: 0, method: "continuation", output, latency_ms: Date.now() - start, backend: dbPath };
       }
@@ -360,6 +389,7 @@ async function handleGate(req: GateRequest): Promise<GateResult> {
       if (results && !results.includes("No results") && !results.includes("Found 0 results") && results.length >= 10) {
         output += `[Memory Context — wikilink fast-path: ${wlKeywords.join(", ")}]\n${results}`;
         logGateDecision({ exitCode: 0, method: "wikilink_fast_path", memoryFound: true, persona: persona ?? undefined, latencyMs: Date.now() - start });
+        logRetrieval({ query: message, chunksReturned: countChunks(results), method: "wikilink_fast_path", persona: persona ?? undefined, latencyMs: Date.now() - start });
         output = await postProcessMimir(persona, message, output, dbPath);
         return { exit_code: 0, method: "wikilink_fast_path", output, latency_ms: Date.now() - start, backend: dbPath };
       }
@@ -381,6 +411,7 @@ async function handleGate(req: GateRequest): Promise<GateResult> {
         if (results && !results.includes("No results") && !results.includes("Found 0 results") && results.length >= 10) {
           output += `[Memory Context — keywords: ${keywords.join(", ")}]\n${results}`;
           logGateDecision({ exitCode: 0, method: "keyword_heuristic", memoryFound: true, persona: persona ?? undefined, latencyMs: Date.now() - start });
+          logRetrieval({ query: message, chunksReturned: countChunks(results), method: "keyword_heuristic", persona: persona ?? undefined, latencyMs: Date.now() - start });
           output = await postProcessMimir(persona, message, output, dbPath);
           return { exit_code: 0, method: "keyword_heuristic", output, latency_ms: Date.now() - start, backend: dbPath };
         }
@@ -415,12 +446,14 @@ async function handleGate(req: GateRequest): Promise<GateResult> {
     const INLINE_CAPTURE_SCRIPT = "/home/workspace/Skills/zo-memory-system/scripts/inline-capture.ts";
     const captureSource = `inline:chat/${gate.keywords.join("-")}`;
     const capturePersona = persona || "shared";
-    const captureEnv = dbPath ? { ...process.env, ZO_MEMORY_DB: dbPath } : undefined;
+    const captureEnvBase = dbPath ? { ...process.env, ZO_MEMORY_DB: dbPath } : { ...process.env };
+    const captureEnv = traceId ? { ...captureEnvBase, ZO_TRACE_ID: traceId } : captureEnvBase;
     const captureArgs = ["bun", INLINE_CAPTURE_SCRIPT, "--message", message, "--persona", capturePersona, "--source", captureSource];
     const captureProc = Bun.spawn(captureArgs, { stdout: "inherit", stderr: "inherit", env: captureEnv });
     captureProc.unref();
 
     logGateDecision({ exitCode: 0, method: "llm_classifier", memoryFound: true, persona: persona ?? undefined, latencyMs: Date.now() - start });
+    logRetrieval({ query: message, chunksReturned: countChunks(results), method: "llm_classifier", persona: persona ?? undefined, latencyMs: Date.now() - start });
     output = await postProcessMimir(persona, message, output, dbPath);
     return { exit_code: 0, method: "llm_classifier", output, latency_ms: Date.now() - start, backend: dbPath };
 
@@ -470,8 +503,10 @@ const server = Bun.serve({
         if (!body.message) {
           return Response.json({ error: "missing 'message' field" }, { status: 400 });
         }
-        const result = await handleGate(body);
-        return Response.json(result);
+        const traceId = generateTraceId();
+        writeTraceId(traceId);
+        const result = await handleGate(body, traceId);
+        return Response.json({ ...result, trace_id: traceId });
       } catch (err) {
         return Response.json({ error: String(err) }, { status: 500 });
       }
