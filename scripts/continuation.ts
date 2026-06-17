@@ -782,6 +782,8 @@ export function detectContinuation(message: string): ContinuationDetection {
   if (/\b(what did we decide|where did we leave off|where did we stop|what was the result|what happened)\b/.test(lower)) score += 3;
   if (/\b(next step|tracking|track|focus|status|progress|review|dashboard|supplier|scorecard|risk dashboard)\b/.test(lower)) score += 2;
   if (/\b(what were we|what are we|is there still|are we still)\b/.test(lower)) score += 2;
+  if (/\b(did|have|do)\s+we\b[^.?!]{0,60}\b(decide|decided|adopt|choose|chose|agree|agreed|approve|reject|skip|skipped|ship|launch|go with|settle on)\b/.test(lower)) score += 3;
+  if (/\b(apply|applying|reuse|transfer|extend|generalize)\b[^.?!]{0,60}\b(playbook|strategy|approach|pattern|method|technique|tactic)\b/.test(lower)) score += 2;
 
   if (/^(write|explain|define|what is|how do i|create a new|build a new)\b/.test(lower)) score -= 2;
 
