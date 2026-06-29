@@ -199,6 +199,7 @@ export async function injectSessionBriefing(personaSlug: string): Promise<string
     if (result.inherited_facts.length > 0) {
       parts.push(`Cross-persona: ${result.inherited_facts.join("; ")}`);
     }
+
     return parts.join("\n");
   } catch {
     return null;
@@ -349,7 +350,7 @@ async function main() {
       }
     }
 
-    // Wikilink fast-path: if message contains [[entity]], search directly without Ollama
+    // Wikilink fast-path: if message contains [[entity]], search directly without an LLM call
     const wikilinks = extractWikilinks(message);
     if (wikilinks.length > 0) {
       const wlKeywords = wikilinks.map(wl => wl.entity);
