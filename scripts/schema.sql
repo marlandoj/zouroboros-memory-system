@@ -18,7 +18,9 @@ CREATE TABLE IF NOT EXISTS facts (
   expires_at INTEGER,
   last_accessed INTEGER,
   confidence REAL DEFAULT 1.0,
-  metadata TEXT
+  metadata TEXT,
+  merged_count INTEGER NOT NULL DEFAULT 0,
+  gate_status TEXT NOT NULL DEFAULT 'allow'
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
@@ -55,6 +57,7 @@ CREATE INDEX IF NOT EXISTS idx_facts_decay ON facts(decay_class);
 CREATE INDEX IF NOT EXISTS idx_facts_expires ON facts(expires_at) WHERE expires_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_facts_created ON facts(created_at);
 CREATE INDEX IF NOT EXISTS idx_facts_lookup ON facts(entity, key);
+CREATE INDEX IF NOT EXISTS idx_facts_gate_status ON facts(gate_status);
 
 CREATE TABLE IF NOT EXISTS ttl_defaults (
   decay_class TEXT PRIMARY KEY,
