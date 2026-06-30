@@ -6,7 +6,7 @@
  * composite scores. Imported by memory.ts to enhance hybrid search.
  *
  * Scoring redistribution when graph links exist:
- *   RRF(0.60) + GraphBoost(0.15) + Freshness(0.15) + Confidence(0.10)
+ *   RRF(0.55) + GraphBoost(0.25) + Freshness(0.10) + Confidence(0.10)
  *
  * When no links exist for any result, returns original scores unchanged.
  */
@@ -73,7 +73,11 @@ export interface GraphNeighbor {
  * @param results - Scored results from RRF fusion (pre-composite)
  * @returns Results with graphBoost and reweighted composite scores
  */
-export function computeGraphBoost(db: Database, results: ScoredResult[]): BoostedResult[] {
+export function computeGraphBoost(
+  db: Database,
+  results: ScoredResult[],
+  supersededIds: Set<string> = new Set(),
+): BoostedResult[] {
   if (results.length === 0) return [];
 
   const resultIds = new Set(results.map(r => r.id));
@@ -81,11 +85,12 @@ export function computeGraphBoost(db: Database, results: ScoredResult[]): Booste
   // Batch-query all links where source OR target is in our result set
   const placeholders = results.map(() => "?").join(",");
   const ids = results.map(r => r.id);
+  const hasVL = hasVaultLinks(db);
   const baseSQL = `SELECT source_id, target_id, relation, weight FROM fact_links WHERE source_id IN (${placeholders}) OR target_id IN (${placeholders})`;
-  const sql = hasVaultLinks(db)
+  const sql = hasVL
     ? `${baseSQL} UNION ALL SELECT source_id, target_id, relation, weight FROM vault_links WHERE source_id IN (${placeholders}) OR target_id IN (${placeholders})`
     : baseSQL;
-  const params = hasVaultLinks(db) ? [...ids, ...ids, ...ids, ...ids] : [...ids, ...ids];
+  const params = hasVL ? [...ids, ...ids, ...ids, ...ids] : [...ids, ...ids];
   const links = db.prepare(sql).all(...params) as FactLink[];
 
   // If no links exist for any result, return with original scoring weights
@@ -103,12 +108,12 @@ export function computeGraphBoost(db: Database, results: ScoredResult[]): Booste
   for (const link of links) {
     const { source_id, target_id, weight } = link;
 
-    // Boost target if source is in results (and target is too)
+    // Both endpoints in results: symmetric full-weight boost (associative link)
     if (resultIds.has(source_id) && resultIds.has(target_id)) {
       boostMap.set(target_id, (boostMap.get(target_id) || 0) + weight);
-      boostMap.set(source_id, (boostMap.get(source_id) || 0) + weight * 0.5); // Smaller reverse boost
+      boostMap.set(source_id, (boostMap.get(source_id) || 0) + weight);
     }
-    // If only one side is in results, give a small boost to the one that is
+    // Only one endpoint in results: smaller boost (dangling link evidence)
     else if (resultIds.has(source_id)) {
       boostMap.set(source_id, (boostMap.get(source_id) || 0) + weight * 0.3);
     } else if (resultIds.has(target_id)) {
@@ -121,10 +126,11 @@ export function computeGraphBoost(db: Database, results: ScoredResult[]): Booste
 
   return results.map(r => {
     const rawBoost = boostMap.get(r.id) || 0;
-    const graphBoost = Math.min(rawBoost / maxBoost, 1.0);
+    // P1-4: a superseded (stale) fact must never be amplified by graph links.
+    const graphBoost = supersededIds.has(r.id) ? 0 : Math.min(rawBoost / maxBoost, 1.0);
 
-    // Reweighted composite: RRF(0.70) + Graph(0.05) + Freshness(0.15) + Confidence(0.10)
-    const composite = r.rrfScore * 0.7 + graphBoost * 0.05 + r.freshness * 0.15 + r.confidence * 0.1;
+    // Reweighted composite: RRF(0.55) + Graph(0.25) + Freshness(0.10) + Confidence(0.10)
+    const composite = r.rrfScore * 0.55 + graphBoost * 0.25 + r.freshness * 0.10 + r.confidence * 0.10;
 
     return {
       ...r,
@@ -150,12 +156,14 @@ export function findGraphNeighbors(
   db: Database,
   topIds: string[],
   existingIds: Set<string>,
-  maxInject: number = 3
+  maxInject: number = 3,
+  supersededIds: Set<string> = new Set(),
 ): Array<{ factId: string; linkedFrom: string; relation: string; weight: number }> {
   if (topIds.length === 0) return [];
 
   const nowSec = Math.floor(Date.now() / 1000);
   const placeholders = topIds.map(() => "?").join(",");
+  const hasVL = hasVaultLinks(db);
 
   const baseNeighborSQL = `
     SELECT fl.source_id, fl.target_id, fl.relation, fl.weight
@@ -165,27 +173,32 @@ export function findGraphNeighbors(
     ) = f.id
     WHERE (fl.source_id IN (${placeholders}) OR fl.target_id IN (${placeholders}))
       AND (f.expires_at IS NULL OR f.expires_at > ?)`;
-  const neighborSQL = hasVaultLinks(db)
+  const neighborSQL = hasVL
     ? `${baseNeighborSQL} UNION ALL SELECT vl.source_id, vl.target_id, vl.relation, vl.weight FROM vault_links vl JOIN facts f2 ON (CASE WHEN vl.source_id IN (${placeholders}) THEN vl.target_id ELSE vl.source_id END) = f2.id WHERE (vl.source_id IN (${placeholders}) OR vl.target_id IN (${placeholders})) AND (f2.expires_at IS NULL OR f2.expires_at > ?) ORDER BY weight DESC LIMIT ?`
     : `${baseNeighborSQL} ORDER BY fl.weight DESC LIMIT ?`;
-  const neighborParams = hasVaultLinks(db)
+  const neighborParams = hasVL
     ? [...topIds, ...topIds, ...topIds, nowSec, ...topIds, ...topIds, ...topIds, nowSec, maxInject * 3]
     : [...topIds, ...topIds, ...topIds, nowSec, maxInject * 3];
   const neighbors = db.prepare(neighborSQL).all(...neighborParams) as FactLink[];
 
+  const topIdSet = new Set(topIds);
+  const injectedIds = new Set<string>();
   const injected: Array<{ factId: string; linkedFrom: string; relation: string; weight: number }> = [];
 
   for (const link of neighbors) {
     if (injected.length >= maxInject) break;
 
     // Determine which side is the neighbor (not in topIds)
-    const isSourceTop = topIds.includes(link.source_id);
+    const isSourceTop = topIdSet.has(link.source_id);
     const neighborId = isSourceTop ? link.target_id : link.source_id;
     const linkedFrom = isSourceTop ? link.source_id : link.target_id;
 
     // Skip if already in results or already injected
-    if (existingIds.has(neighborId) || injected.some(i => i.factId === neighborId)) continue;
+    if (existingIds.has(neighborId) || injectedIds.has(neighborId)) continue;
+    // P1-4: never inject a superseded (stale) fact as a neighbour.
+    if (supersededIds.has(neighborId)) continue;
 
+    injectedIds.add(neighborId);
     injected.push({
       factId: neighborId,
       linkedFrom,
@@ -256,6 +269,14 @@ export function findGraphNeighborsDeep(
 
   const depth = Math.max(1, Math.min(maxDepth, MAX_DEPTH_LIMIT));
   const startTime = performance.now();
+  const hasVL = hasVaultLinks(db);
+
+  // Precompile the per-node BFS query once (parameter shape is constant per call)
+  const bfsBase = `SELECT source_id, target_id, weight FROM fact_links WHERE source_id = ? OR target_id = ?`;
+  const bfsSQL = hasVL
+    ? `${bfsBase} UNION ALL SELECT source_id, target_id, weight FROM vault_links WHERE source_id = ? OR target_id = ? ORDER BY weight DESC`
+    : `${bfsBase} ORDER BY weight DESC`;
+  const bfsStmt = db.prepare(bfsSQL);
 
   // Visited set includes seeds so we never revisit them
   const visited = new Set<string>(seedIds);
@@ -278,13 +299,9 @@ export function findGraphNeighborsDeep(
       if (performance.now() - startTime > BFS_TIMEOUT_MS) break;
       if (results.length >= MAX_EXPANDED_NODES) break;
 
-      // Query links where this node is source or target (fact_links + vault_links)
-      const bfsBase = `SELECT source_id, target_id, weight FROM fact_links WHERE source_id = ? OR target_id = ?`;
-      const bfsSQL = hasVaultLinks(db)
-        ? `${bfsBase} UNION ALL SELECT source_id, target_id, weight FROM vault_links WHERE source_id = ? OR target_id = ? ORDER BY weight DESC`
-        : `${bfsBase} ORDER BY weight DESC`;
-      const bfsParams = hasVaultLinks(db) ? [nodeId, nodeId, nodeId, nodeId] : [nodeId, nodeId];
-      const links = db.prepare(bfsSQL).all(...bfsParams) as Array<{ source_id: string; target_id: string; weight: number }>;
+      const links = hasVL
+        ? bfsStmt.all(nodeId, nodeId, nodeId, nodeId) as Array<{ source_id: string; target_id: string; weight: number }>
+        : bfsStmt.all(nodeId, nodeId) as Array<{ source_id: string; target_id: string; weight: number }>;
 
       for (const link of links) {
         if (results.length >= MAX_EXPANDED_NODES) break;

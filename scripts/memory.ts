@@ -22,6 +22,7 @@ import { randomUUID, createHash } from "crypto";
 import { join } from "path";
 import { readFileSync } from "fs";
 import { computeGraphBoost, findGraphNeighbors } from "./graph-boost";
+import { supersededSet, supersedingFact, applySupersedePenalty, supersedeSuppressOn } from "./supersede";
 import { extractWikilinks, resolveWikilinkTargets, autoCorrectWikilinks, shouldExcludeFromWrapping, ENTITY_LIKE_PATTERN } from "./wikilink-utils";
 import {
   createEpisodeRecord,
@@ -510,10 +511,10 @@ function entryRecency(e: MemoryEntry): number {
 // --- Hybrid Search ---
 async function hybridSearch(
   query: string,
-  options: { persona?: string; limit?: number; useHyde?: boolean; useGraph?: boolean; skipVector?: boolean; expandSessions?: boolean; includeHeld?: boolean } = {}
+  options: { persona?: string; limit?: number; useHyde?: boolean; useGraph?: boolean; skipVector?: boolean; expandSessions?: boolean; includeHeld?: boolean; includeSuperseded?: boolean } = {}
 ): Promise<Array<{ entry: MemoryEntry; score: number; sources: string[]; expandedFrom?: string }>> {
   const db = await initDb();
-  const { persona, limit = 10, useHyde = true, useGraph = true, skipVector = false, expandSessions = false, includeHeld = false } = options;
+  const { persona, limit = 10, useHyde = true, useGraph = true, skipVector = false, expandSessions = false, includeHeld = false, includeSuperseded = false } = options;
   const nowSec = Math.floor(Date.now() / 1000);
 
   // P0-1 (T5): exclude gate_status='hold' from default retrieval. Opt-in includeHeld
@@ -730,36 +731,54 @@ async function hybridSearch(
   // P0-1 (T4): score-level ACT-R recency. weight 0 when flag off ⇒ identical ordering.
   const recencyW = p0FlagOn("MEMORY_RECENCY_DECAY") ? RECENCY_WEIGHT : 0;
 
+  // P1-4 (T2): candidates that something newer supersedes. Empty when flag off or
+  // includeSuperseded ⇒ identity. Single batched lookup over the candidate ids.
+  const supersededIds = (supersedeSuppressOn() && !includeSuperseded)
+    ? supersededSet(db, preBoosted.map(r => r.id))
+    : new Set<string>();
+  const taggedSources = (id: string, sources: string[]) =>
+    supersededIds.has(id) ? [...sources, "superseded"] : sources;
+
   // When --no-graph is set, skip graph boost and neighbor injection
   if (!useGraph) {
     const finalResults: Array<{ entry: MemoryEntry; score: number; sources: string[] }> = preBoosted.map(r => ({
       entry: (r as any).entry,
-      score: applyRecencyDecay(
-        r.rrfScore * 0.7 + r.freshness * 0.2 + r.confidence * 0.1,
-        entryRecency(r.entry),
-        recencyW,
+      score: applySupersedePenalty(
+        applyRecencyDecay(
+          r.rrfScore * 0.7 + r.freshness * 0.2 + r.confidence * 0.1,
+          entryRecency(r.entry),
+          recencyW,
+        ),
+        supersededIds.has(r.id),
+        includeSuperseded,
       ),
-      sources: r.sources,
+      sources: taggedSources(r.id, r.sources),
     }));
     finalResults.sort((a, b) => b.score - a.score);
     return finalResults.slice(0, limit);
   }
 
-  // Apply graph boost (reweights composite scores when links exist)
-  const boosted = computeGraphBoost(db, preBoosted);
+  // Apply graph boost (reweights composite scores when links exist).
+  // P1-4 (T3): pass supersededIds so a stale fact is never AMPLIFIED.
+  const boosted = computeGraphBoost(db, preBoosted, supersededIds);
 
-  // Inject graph-discovered neighbors (facts linked to top results but not in current set)
+  // Inject graph-discovered neighbors (facts linked to top results but not in current set).
+  // P1-4 (T3): skip injecting superseded facts; surface their superseding fact instead.
   const topIds = boosted
     .sort((a, b) => b.composite - a.composite)
     .slice(0, 3)
     .map(r => r.id);
   const existingIds = new Set(boosted.map(r => r.id));
-  const neighbors = findGraphNeighbors(db, topIds, existingIds, 2);
+  const neighbors = findGraphNeighbors(db, topIds, existingIds, 2, supersededIds);
 
   const finalResults: Array<{ entry: MemoryEntry; score: number; sources: string[] }> = boosted.map(r => ({
     entry: (r as any).entry,
-    score: applyRecencyDecay(r.composite, entryRecency((r as any).entry), recencyW),
-    sources: r.graphBoost > 0 ? [...r.sources, "graph"] : r.sources,
+    score: applySupersedePenalty(
+      applyRecencyDecay(r.composite, entryRecency((r as any).entry), recencyW),
+      supersededIds.has(r.id),
+      includeSuperseded,
+    ),
+    sources: taggedSources(r.id, r.graphBoost > 0 ? [...r.sources, "graph"] : r.sources),
   }));
 
   // Add injected neighbors with a graph-only score
@@ -771,6 +790,25 @@ async function hybridSearch(
         entry: neighborEntry,
         score: applyRecencyDecay(neighbor.weight * 0.15, entryRecency(neighborEntry), recencyW), // Graph-only score
         sources: [`graph:${neighbor.relation}`],
+      });
+    }
+  }
+
+  // P1-4 (T3): surface the "current" fact when a top result is superseded and the
+  // replacement isn't already present (the Unblocked "current decision is answerable" payoff).
+  if (supersededIds.size > 0) {
+    const present = new Set(finalResults.map(r => r.entry.id));
+    for (const staleId of supersededIds) {
+      const newerId = supersedingFact(db, staleId);
+      if (!newerId || present.has(newerId)) continue;
+      const fact = db.prepare("SELECT * FROM facts WHERE id = ?").get(newerId) as Record<string, unknown>;
+      if (!fact) continue;
+      const newerEntry = rowToEntry(fact);
+      present.add(newerId);
+      finalResults.push({
+        entry: newerEntry,
+        score: applyRecencyDecay(0.2, entryRecency(newerEntry), recencyW),
+        sources: ["graph:supersedes"],
       });
     }
   }
@@ -1633,7 +1671,7 @@ async function main() {
         flags["expand-sessions"] = "true";
       } else if (args[i] === "--no-graph") {
         flags.graph = "false";
-      } else if (args[i] === "--create" || args[i] === "--list" || args[i] === "--success" || args[i] === "--failure" || args[i] === "--dry-run" || args[i] === "--json" || args[i] === "--no-embed" || args[i] === "--expand-sessions" || args[i] === "--skip-vector") {
+      } else if (args[i] === "--create" || args[i] === "--list" || args[i] === "--success" || args[i] === "--failure" || args[i] === "--dry-run" || args[i] === "--json" || args[i] === "--no-embed" || args[i] === "--expand-sessions" || args[i] === "--skip-vector" || args[i] === "--include-superseded") {
         flags[args[i].slice(2)] = "true";
       } else {
         flags[args[i].slice(2)] = args[i + 1] || "";
@@ -1829,6 +1867,7 @@ async function main() {
         useGraph: flags.graph !== "false",
         skipVector: !!flags["skip-vector"],
         expandSessions: !!flags["expand-sessions"],
+        includeSuperseded: flags["include-superseded"] === "true" || !!flags["include-superseded"],
       });
       if (flags.json === "true") {
         console.log(JSON.stringify(results.map(({ entry, score, sources, expandedFrom }) => ({
