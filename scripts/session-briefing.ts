@@ -421,9 +421,11 @@ if (import.meta.main) {
   }
 
   const persona = positionals[0];
-  const maxTokens = values["max-tokens"] ? parseInt(values["max-tokens"]) : DEFAULT_MAX_TOKENS;
+  const maxTokensArg = values["max-tokens"];
+  const maxTokens = typeof maxTokensArg === "string" ? parseInt(maxTokensArg) : DEFAULT_MAX_TOKENS;
+  const domain = typeof values.domain === "string" ? values.domain : undefined;
 
-  const result = await generateBriefing(persona, values.domain, maxTokens);
+  const result = await generateBriefing(persona, domain, maxTokens);
 
   if (values.json) {
     console.log(JSON.stringify(result, null, 2));

@@ -260,7 +260,7 @@ async function getEmbedding(text: string): Promise<number[] | null> {
     });
     if (!resp.ok) return null;
     const data = await resp.json() as { embedding?: number[] };
-    return data.embedding;
+    return data.embedding ?? null;
   } catch { return null; }
 }
 
