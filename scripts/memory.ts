@@ -17,7 +17,7 @@
  * Backward compatible with v1/v2 facts DB.
  */
 
-import { Database } from "bun:sqlite";
+import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { randomUUID, createHash } from "crypto";
 import { join } from "path";
 import { readFileSync } from "fs";
@@ -632,7 +632,7 @@ async function ftsSearch(query: string, options: { persona?: string; limit?: num
 
   if (!safeQuery) return [];
 
-  const params: unknown[] = [safeQuery, nowSec];
+  const params: SQLQueryBindings[] = [safeQuery, nowSec];
   let entityFilter = "";
   if (persona) { entityFilter += " AND f.persona = ?"; params.push(persona); }
   if (entity) { entityFilter += " AND f.entity = ?"; params.push(entity); }
@@ -709,7 +709,7 @@ async function backfillEmbeddings(batchSize: number = 50): Promise<{ processed: 
       db.prepare(`
         INSERT INTO fact_embeddings (fact_id, embedding, model)
         VALUES (?, ?, ?)
-      `).run(row.id, Buffer.from(new Float32Array(embedding).buffer), EMBEDDING_MODEL);
+      `).run(row.id as string, Buffer.from(new Float32Array(embedding).buffer), EMBEDDING_MODEL);
       processed++;
       process.stdout.write(".");
     } else {
@@ -868,7 +868,7 @@ function parseRelativeTime(input: string): number {
 async function findEpisodes(query: TemporalQuery): Promise<Episode[]> {
   const db = await initDb();
   const conditions: string[] = [];
-  const params: unknown[] = [];
+  const params: SQLQueryBindings[] = [];
   
   if (query.since) {
     conditions.push("e.happened_at >= ?");

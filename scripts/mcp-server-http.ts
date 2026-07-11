@@ -21,7 +21,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { Database } from "bun:sqlite";
+import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { randomUUID } from "crypto";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
@@ -113,7 +113,7 @@ async function toolMemorySearch(args: {
   const nowSec = Math.floor(Date.now() / 1000);
 
   const ftsWhere: string[] = [];
-  const ftsParams: unknown[] = [];
+  const ftsParams: SQLQueryBindings[] = [];
 
   if (persona) { ftsWhere.push("f.persona = ?"); ftsParams.push(persona); }
   if (category) { ftsWhere.push("f.category = ?"); ftsParams.push(category); }
@@ -234,7 +234,7 @@ function toolMemoryEpisodes(args: {
   if (!hasTable) return "Episodes table not found. Run `bun memory.ts migrate` first.";
 
   const where: string[] = [];
-  const params: unknown[] = [];
+  const params: SQLQueryBindings[] = [];
 
   if (args.entity) {
     where.push("e.id IN (SELECT episode_id FROM episode_entities WHERE entity = ?)");
