@@ -183,11 +183,24 @@ assert(DEFAULT_POOLS.some(p => p.name === "finance"), "DEFAULT_POOLS includes fi
 
 console.log("\n=== injectSessionBriefing Tests ===");
 
-const excludedResult = await injectSessionBriefing("claude-code");
-assert(excludedResult === null, "excluded persona (claude-code) returns null");
+const deterministicBriefingGenerator = async (persona: string) => ({
+  persona,
+  domain: null,
+  briefing: `Deterministic briefing for ${persona}`,
+  one_thing: "What would you like to work on?",
+  active_items: [],
+  recent_episodes: [],
+  inherited_facts: [],
+  vault_context: [],
+  generated_at: 1,
+  latency_ms: 0,
+});
 
-const excludedResult2 = await injectSessionBriefing("hermes-agent");
-assert(excludedResult2 === null, "excluded persona (hermes-agent) returns null");
+const transportResult = await injectSessionBriefing("claude-code", deterministicBriefingGenerator);
+assert(transportResult?.includes("[Session Briefing — claude-code") === true, "claude-code follows the normal briefing path");
+
+const transportResult2 = await injectSessionBriefing("hermes-agent", deterministicBriefingGenerator);
+assert(transportResult2?.includes("[Session Briefing — hermes-agent") === true, "hermes-agent follows the normal briefing path");
 
 // Test with a real persona (may produce briefing or null depending on data)
 const briefingResult = await injectSessionBriefing("alaric");

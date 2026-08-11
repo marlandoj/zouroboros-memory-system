@@ -22,12 +22,68 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import {
-  applyEvidenceReadinessGate,
-  evidenceGateConfigFromEnv,
-  type EvidenceGateResult,
-  type RetrievalHit,
-} from "../../ai-engineer-learning/scripts/evidence-readiness.ts";
+
+type EvidenceGateMode = "off" | "annotate";
+type EvidenceGateConfig = { mode: EvidenceGateMode; minTier: string };
+type RetrievalHit = { id: string | number; score?: number; payload?: Record<string, unknown> };
+type EvidenceReadinessAnnotation = {
+  contractVersion: string;
+  stage: string;
+  validity: "valid" | "invalid";
+  meetsThreshold: boolean;
+  reasons: string[];
+  provenance: {
+    collection: "ai-engineer-videos";
+    videoId: string | null;
+    transcriptBacked: boolean;
+    articlePath: string | null;
+    sourceHash: string | null;
+    processorVersion: string | null;
+  };
+};
+type EvidenceGateResult<T extends RetrievalHit> = {
+  mode: EvidenceGateMode;
+  minTier: string;
+  hits: Array<T | (T & { readiness: EvidenceReadinessAnnotation })>;
+  cohort: {
+    total: number;
+    byStage: Record<string, number>;
+    meetingThreshold: number;
+    meetingThresholdRatio: number;
+  };
+  synthesis: { permitted: true; labeled: boolean; reason: string };
+};
+type EvidenceReadinessRuntime = {
+  evidenceGateConfigFromEnv: (env?: NodeJS.ProcessEnv) => EvidenceGateConfig;
+  applyEvidenceReadinessGate: <T extends RetrievalHit>(
+    hits: T[],
+    config: EvidenceGateConfig,
+  ) => EvidenceGateResult<T>;
+};
+
+function isEvidenceReadinessRuntime(value: unknown): value is EvidenceReadinessRuntime {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate.evidenceGateConfigFromEnv === "function"
+    && typeof candidate.applyEvidenceReadinessGate === "function";
+}
+
+const evidenceReadinessPath = resolve(
+  import.meta.dir,
+  process.env.EVIDENCE_READINESS_MODULE_PATH || "../../ai-engineer-learning/scripts/evidence-readiness.ts",
+);
+let evidenceReadinessRuntime: EvidenceReadinessRuntime | null = null;
+let evidenceReadinessLoadFailure = "dependency not found";
+try {
+  const module: unknown = await import(evidenceReadinessPath);
+  if (!isEvidenceReadinessRuntime(module)) {
+    throw new Error("module does not export the canonical readiness callables");
+  }
+  evidenceReadinessRuntime = module;
+} catch (error) {
+  evidenceReadinessLoadFailure = error instanceof Error ? error.message : String(error);
+}
+export const evidenceReadinessRuntimeAvailable = evidenceReadinessRuntime !== null;
 
 if (!process.env.OPENAI_API_KEY && !process.env.ZO_OPENAI_API_KEY) {
   try {
@@ -204,7 +260,18 @@ export function applyAiEngineerEvidenceReadiness(
   hits: Hit[],
   env: NodeJS.ProcessEnv = process.env,
 ): { hits: Hit[]; gate: EvidenceGateResult<CollectionHit> | null } {
-  const config = evidenceGateConfigFromEnv(env);
+  const requestedMode = (env.EVIDENCE_GATE_MODE ?? "off").toLowerCase();
+  if (requestedMode !== "off" && requestedMode !== "annotate" && requestedMode !== "enforce") {
+    throw new Error(`invalid EVIDENCE_GATE_MODE: ${env.EVIDENCE_GATE_MODE}`);
+  }
+  if (!evidenceReadinessRuntime) {
+    if (requestedMode === "off") return { hits, gate: null };
+    throw new Error(
+      `EVIDENCE_GATE_MODE=${requestedMode} refused: canonical evidence-readiness runtime unavailable (${evidenceReadinessLoadFailure})`,
+    );
+  }
+
+  const config = evidenceReadinessRuntime.evidenceGateConfigFromEnv(env);
   const targetPositions: number[] = [];
   const targetHits: CollectionHit[] = [];
 
@@ -217,7 +284,7 @@ export function applyAiEngineerEvidenceReadiness(
 
   if (targetHits.length === 0) return { hits, gate: null };
 
-  const gate = applyEvidenceReadinessGate(targetHits, config);
+  const gate = evidenceReadinessRuntime.applyEvidenceReadinessGate(targetHits, config);
   if (gate.mode === "off") return { hits, gate };
 
   const annotated = [...hits];

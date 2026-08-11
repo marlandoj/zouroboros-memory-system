@@ -375,9 +375,9 @@ export function autoResolveStaleLoops(
 
   // Fetch stale loops
   const staleLoops = db.prepare(`
-    SELECT id, title, entity FROM open_loops
+    SELECT id, title, summary, entity FROM open_loops
     WHERE status = 'stale' AND updated_at < ?
-  `).all(staleThreshold) as Array<{ id: string; title: string; entity: string | null }>;
+  `).all(staleThreshold) as Array<{ id: string; title: string; summary: string; entity: string | null }>;
 
   let resolved = 0;
   let skipped = 0;
@@ -568,6 +568,13 @@ export function upsertOpenLoop(db: Database, input: OpenLoopInput): OpenLoopReco
   `).get(fingerprint) as Record<string, unknown> | null;
 
   if (existing) {
+    const existingId = typeof existing.id === "string" ? existing.id : null;
+    if (!existingId) {
+      throw new Error("open_loops row is missing a string id");
+    }
+    const existingSource = typeof existing.source === "string" ? existing.source : null;
+    const existingRelatedEpisodeId = typeof existing.related_episode_id === "string" ? existing.related_episode_id : null;
+    const existingMetadata = typeof existing.metadata === "string" ? existing.metadata : null;
     db.prepare(`
       UPDATE open_loops
       SET summary = ?, priority = ?, entity = ?, source = ?, related_episode_id = ?, metadata = ?, updated_at = ?, status = ?
@@ -576,18 +583,18 @@ export function upsertOpenLoop(db: Database, input: OpenLoopInput): OpenLoopReco
       summary,
       priority,
       entity,
-      input.source || existing.source || null,
-      input.relatedEpisodeId || existing.related_episode_id || null,
-      safeJson(input.metadata) || (existing.metadata as string) || null,
+      input.source || existingSource,
+      input.relatedEpisodeId || existingRelatedEpisodeId,
+      safeJson(input.metadata) || existingMetadata,
       nowSec,
       status,
-      existing.id
+      existingId
     );
 
-    syncOpenLoopFts(db, existing.id as string, title, summary, kind, status, entity);
+    syncOpenLoopFts(db, existingId, title, summary, kind, status, entity);
 
     return {
-      id: existing.id as string,
+      id: existingId,
       persona,
       title,
       summary,
@@ -671,12 +678,14 @@ export function resolveMatchingOpenLoops(db: Database, text: string): number {
     const haystack = `${row.title || ""} ${row.summary || ""}`.toLowerCase();
     const matches = keywords.filter((k) => haystack.includes(k)).length;
     if (matches >= 2) {
+      const rowId = typeof row.id === "string" ? row.id : null;
+      if (!rowId) continue;
       db.prepare(`
         UPDATE open_loops
         SET status = 'resolved', resolved_at = ?, updated_at = ?
         WHERE id = ?
-      `).run(Math.floor(Date.now() / 1000), Math.floor(Date.now() / 1000), row.id);
-      syncOpenLoopFts(db, row.id as string, row.title as string, row.summary as string, row.kind as OpenLoopKind, "resolved", row.entity as string | null);
+      `).run(Math.floor(Date.now() / 1000), Math.floor(Date.now() / 1000), rowId);
+      syncOpenLoopFts(db, rowId, row.title as string, row.summary as string, row.kind as OpenLoopKind, "resolved", row.entity as string | null);
       resolved++;
     }
   }

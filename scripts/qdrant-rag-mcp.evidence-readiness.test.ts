@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import type { Hit } from "./rag-pipeline";
-import { applyAiEngineerEvidenceReadiness, formatHit } from "./qdrant-rag-mcp";
+import {
+  applyAiEngineerEvidenceReadiness,
+  evidenceReadinessRuntimeAvailable,
+  formatHit,
+} from "./qdrant-rag-mcp";
 
 const otherCollectionHit: Hit = {
   id: "other-1",
@@ -37,6 +41,13 @@ describe("qdrant-rag MCP evidence readiness", () => {
 
   test("annotate mode changes only ai-engineer-videos positions without reordering", () => {
     const hits = [aiEngineerHit, otherCollectionHit, { ...aiEngineerHit, id: "ai-2" }];
+    if (!evidenceReadinessRuntimeAvailable) {
+      expect(() => applyAiEngineerEvidenceReadiness(hits, {
+        EVIDENCE_GATE_MODE: "annotate",
+        EVIDENCE_GATE_MIN_TIER: "transcript_staged",
+      })).toThrow("canonical evidence-readiness runtime unavailable");
+      return;
+    }
     const otherBefore = formatHit(otherCollectionHit, otherCollectionHit.collection ?? "");
     const result = applyAiEngineerEvidenceReadiness(hits, {
       EVIDENCE_GATE_MODE: "annotate",
@@ -61,7 +72,7 @@ describe("qdrant-rag MCP evidence readiness", () => {
   test("malformed and enforcement configuration fail closed", () => {
     expect(() =>
       applyAiEngineerEvidenceReadiness([aiEngineerHit], { EVIDENCE_GATE_MODE: "enforce" }),
-    ).toThrow("not authorized");
+    ).toThrow(evidenceReadinessRuntimeAvailable ? "not authorized" : "canonical evidence-readiness runtime unavailable");
     expect(() =>
       applyAiEngineerEvidenceReadiness([aiEngineerHit], { EVIDENCE_GATE_MODE: "invalid" }),
     ).toThrow("invalid EVIDENCE_GATE_MODE");

@@ -832,7 +832,7 @@ async function ftsSearch(query: string, options: { persona?: string; limit?: num
 
   if (!safeQuery) return [];
 
-  const params: unknown[] = [safeQuery, nowSec];
+  const params: Array<string | number> = [safeQuery, nowSec];
   let entityFilter = "";
   if (persona) { entityFilter += " AND f.persona = ?"; params.push(persona); }
   if (entity) { entityFilter += " AND f.entity = ?"; params.push(entity); }
@@ -906,10 +906,16 @@ async function backfillEmbeddings(batchSize: number = 50): Promise<{ processed: 
     const embedding = await getEmbedding(text);
     
     if (embedding) {
+      const factId = typeof row.id === "string" ? row.id : null;
+      if (!factId) {
+        failed++;
+        process.stdout.write("x");
+        continue;
+      }
       db.prepare(`
         INSERT INTO fact_embeddings (fact_id, embedding, model)
         VALUES (?, ?, ?)
-      `).run(row.id, Buffer.from(new Float32Array(embedding).buffer), EMBEDDING_MODEL);
+      `).run(factId, Buffer.from(new Float32Array(embedding).buffer), EMBEDDING_MODEL);
       processed++;
       process.stdout.write(".");
     } else {
@@ -1068,7 +1074,7 @@ function parseRelativeTime(input: string): number {
 async function findEpisodes(query: TemporalQuery): Promise<Episode[]> {
   const db = await initDb();
   const conditions: string[] = [];
-  const params: unknown[] = [];
+  const params: Array<string | number> = [];
   
   if (query.since) {
     conditions.push("e.happened_at >= ?");
