@@ -82,7 +82,7 @@ export interface UnifiedDecayConfig {
 
 export const UNIFIED_DEFAULTS: UnifiedDecayConfig = {
   decayRate: ACTR_DEFAULTS.decayRate,
-  spreadingFactor: ACTR_DEFAULTS.spreadingFactor,
+  spreadingFactor: ACTR_DEFAULTS.spreadingStrength,
   fanFactor: ACTR_DEFAULTS.fanFactor,
   retrievalThreshold: RETRIEVAL_THRESHOLD,
   protectionBoost: ARTICULATION_BOOST,

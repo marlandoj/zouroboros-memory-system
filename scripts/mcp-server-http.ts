@@ -125,7 +125,7 @@ async function toolMemorySearch(args: {
   const nowSec = Math.floor(Date.now() / 1000);
 
   const ftsWhere: string[] = [];
-  const ftsParams: unknown[] = [];
+  const ftsParams: Array<string | number> = [];
 
   if (persona) { ftsWhere.push("f.persona = ?"); ftsParams.push(persona); }
   if (category) { ftsWhere.push("f.category = ?"); ftsParams.push(category); }
@@ -246,7 +246,7 @@ function toolMemoryEpisodes(args: {
   if (!hasTable) return "Episodes table not found. Run `bun memory.ts migrate` first.";
 
   const where: string[] = [];
-  const params: unknown[] = [];
+  const params: Array<string | number> = [];
 
   if (args.entity) {
     where.push("e.id IN (SELECT episode_id FROM episode_entities WHERE entity = ?)");

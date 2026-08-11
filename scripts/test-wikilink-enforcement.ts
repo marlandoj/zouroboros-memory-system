@@ -142,7 +142,7 @@ const db = createTestDb();
   const result = autoCorrectWikilinks("Integrates system.memory and tool.ollama", db);
   assert(result !== null, "Corrects multiple known entities");
   assert(
-    result?.corrected_value.includes("[[system.memory]]") && result?.corrected_value.includes("[[tool.ollama]]"),
+    result !== null && result.corrected_value.includes("[[system.memory]]") && result.corrected_value.includes("[[tool.ollama]]"),
     "Both entities wrapped",
     result?.corrected_value
   );
@@ -204,7 +204,7 @@ console.log("\n=== Auto-Correction: Exclusion Filter in Context ===\n");
     result?.corrected_value
   );
   assert(
-    result?.corrected_value.includes("[[project.ffb]]"),
+    result !== null && result.corrected_value.includes("[[project.ffb]]"),
     "Does wrap project.ffb",
     result?.corrected_value
   );
@@ -225,7 +225,7 @@ console.log("\n=== Auto-Correction: Self-Entity Skip ===\n");
     result?.corrected_value
   );
   assert(
-    result?.corrected_value.includes("[[tool.ollama]]"),
+    result !== null && result.corrected_value.includes("[[tool.ollama]]"),
     "Wraps non-self entity",
     result?.corrected_value
   );

@@ -44,7 +44,11 @@ async function checkModelAvailable(model: string): Promise<boolean> {
     const resp = await fetch(`${OLLAMA_URL}/api/tags`);
     if (!resp.ok) return false;
     const data = await resp.json();
-    const models: string[] = (data.models || []).map((m: any) => m.name);
+    if (!data || typeof data !== "object" || !("models" in data) || !Array.isArray(data.models)) return false;
+    const models = data.models.flatMap((entry): string[] => {
+      if (!entry || typeof entry !== "object" || !("name" in entry) || typeof entry.name !== "string") return [];
+      return [entry.name];
+    });
     return models.some((m) => m.startsWith(model));
   } catch { return false; }
 }
@@ -60,7 +64,11 @@ async function embedText(model: string, text: string): Promise<{ embedding: numb
     });
     if (!resp.ok) return { embedding: null, time_ms: Date.now() - start };
     const data = await resp.json();
-    return { embedding: data.embedding || null, time_ms: Date.now() - start };
+    const embedding = data && typeof data === "object" && "embedding" in data && Array.isArray(data.embedding)
+      && data.embedding.every((value) => typeof value === "number")
+      ? data.embedding
+      : null;
+    return { embedding, time_ms: Date.now() - start };
   } catch { return { embedding: null, time_ms: Date.now() - start }; }
 }
 

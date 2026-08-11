@@ -87,7 +87,9 @@ export function getAccessiblePersonas(db: Database, persona: string): string[] {
   // Direct pool membership
   const pools = db.prepare("SELECT pool_id FROM persona_pool_members WHERE persona = ?").all(persona) as Array<Record<string, unknown>>;
   for (const pool of pools) {
-    const members = db.prepare("SELECT persona FROM persona_pool_members WHERE pool_id = ? AND persona != ?").all(pool.pool_id, persona) as Array<Record<string, unknown>>;
+    const poolId = typeof pool.pool_id === "string" ? pool.pool_id : null;
+    if (!poolId) continue;
+    const members = db.prepare("SELECT persona FROM persona_pool_members WHERE pool_id = ? AND persona != ?").all(poolId, persona) as Array<Record<string, unknown>>;
     for (const m of members) direct.push(m.persona as string);
   }
   // Inheritance chain
