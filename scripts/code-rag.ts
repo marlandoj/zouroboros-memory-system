@@ -27,6 +27,12 @@ const TOP_N = 3;
 const SOURCE_RE = /\.(ts|tsx|js|jsx|py|sh|md|json)$/i;
 const NOISE_RE = /(__pycache__|\.db(-wal|-shm)?$|\.cache|node_modules|trajectories\/|\.pyc$)/i;
 
+export type JsonObject = Record<string, unknown>;
+
+export function isJsonObject(value: unknown): value is JsonObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 const STOPWORDS = new Set([
   "the", "a", "an", "and", "or", "but", "to", "of", "in", "on", "for", "with",
   "is", "are", "was", "were", "be", "been", "being", "this", "that", "these",
@@ -61,7 +67,7 @@ export function cliCall(
   command: string,
   args: Record<string, unknown>,
   timeoutMs = DEFAULT_TIMEOUT_MS,
-): any | null {
+): JsonObject | null {
   if (!existsSync(CODEBASE_MEMORY_BIN)) return null;
   let r;
   try {
@@ -77,14 +83,16 @@ export function cliCall(
   const out = (r.stdout || "").trim();
   if (!out) return null;
   try {
-    return JSON.parse(out);
+    const parsed: unknown = JSON.parse(out);
+    return isJsonObject(parsed) ? parsed : null;
   } catch {
     // Tolerate a stray init/log line before the JSON body.
     for (const line of out.split("\n").reverse()) {
       const s = line.trim();
       if (s.startsWith("{")) {
         try {
-          return JSON.parse(s);
+          const parsed: unknown = JSON.parse(s);
+          if (isJsonObject(parsed)) return parsed;
         } catch {
           continue;
         }
@@ -119,18 +127,28 @@ export function searchCode(
   for (const pattern of list) {
     for (const project of projects) {
       const data = cliCall("search_code", { project, pattern, limit: limit * 2 });
-      for (const res of (data?.results ?? [])) {
-        const file = res.file || res.file_path || "";
+      const results = Array.isArray(data?.results) ? data.results : [];
+      for (const result of results) {
+        if (!isJsonObject(result)) continue;
+        const file = typeof result.file === "string"
+          ? result.file
+          : typeof result.file_path === "string" ? result.file_path : "";
         if (!file || !SOURCE_RE.test(file) || NOISE_RE.test(file)) continue;
-        const name = res.node || res.name || res.qualified_name || "?";
-        const key = `${project}:${file}:${res.start_line}`;
+        const name = typeof result.node === "string"
+          ? result.node
+          : typeof result.name === "string"
+            ? result.name
+            : typeof result.qualified_name === "string" ? result.qualified_name : "?";
+        const start = typeof result.start_line === "number" ? result.start_line : 0;
+        const end = typeof result.end_line === "number" ? result.end_line : 0;
+        const key = `${project}:${file}:${start}`;
         if (seen.has(key)) continue;
         seen.add(key);
         hits.push({
           name,
           file,
-          start: res.start_line ?? 0,
-          end: res.end_line ?? 0,
+          start,
+          end,
           project,
         });
       }
@@ -162,7 +180,9 @@ export async function buildCodeContext(
 /** Recently-changed source files for a project (noise-filtered). */
 export function changedSourceFiles(project: string, limit = 10): string[] {
   const data = cliCall("detect_changes", { project });
-  const files = (data?.changed_files ?? []) as string[];
+  const files = Array.isArray(data?.changed_files)
+    ? data.changed_files.filter((value): value is string => typeof value === "string")
+    : [];
   return files.filter((f) => SOURCE_RE.test(f) && !NOISE_RE.test(f)).slice(0, limit);
 }
 

@@ -18,7 +18,7 @@
  * null/[] on a missing binary, timeout, non-zero exit, or parse error. The
  * instructor surface must never break because the graph is unreachable.
  */
-import { cliCall, changedSourceFiles, extractKeywords } from "./code-rag.ts";
+import { cliCall, changedSourceFiles, extractKeywords, isJsonObject } from "./code-rag.ts";
 
 export const SKILLS_PROJECT = "home-workspace-Skills";
 
@@ -36,15 +36,21 @@ export interface GraphHit {
 export function findTheCode(query: string, project = SKILLS_PROJECT, limit = 3): GraphHit[] {
   const data = cliCall("search_graph", { project, query, limit: limit * 2 });
   const out: GraphHit[] = [];
-  for (const r of (data?.results ?? [])) {
-    const file = r.file_path || r.file || "";
+  const results = Array.isArray(data?.results) ? data.results : [];
+  for (const result of results) {
+    if (!isJsonObject(result)) continue;
+    const file = typeof result.file_path === "string"
+      ? result.file_path
+      : typeof result.file === "string" ? result.file : "";
     if (!file) continue;
     out.push({
-      name: r.name || r.qualified_name || "?",
+      name: typeof result.name === "string"
+        ? result.name
+        : typeof result.qualified_name === "string" ? result.qualified_name : "?",
       file,
-      start: r.start_line ?? 0,
-      end: r.end_line ?? 0,
-      label: r.label || "",
+      start: typeof result.start_line === "number" ? result.start_line : 0,
+      end: typeof result.end_line === "number" ? result.end_line : 0,
+      label: typeof result.label === "string" ? result.label : "",
     });
     if (out.length >= limit) break;
   }
@@ -57,7 +63,10 @@ export function findTheCode(query: string, project = SKILLS_PROJECT, limit = 3):
 export function graphStats(project = SKILLS_PROJECT): { nodes: number; edges: number } | null {
   const data = cliCall("get_architecture", { project });
   if (!data) return null;
-  return { nodes: data.total_nodes ?? 0, edges: data.total_edges ?? 0 };
+  return {
+    nodes: typeof data.total_nodes === "number" ? data.total_nodes : 0,
+    edges: typeof data.total_edges === "number" ? data.total_edges : 0,
+  };
 }
 
 /** True iff the named skill directory is present in the graph (renamed/removed → false). */
@@ -92,15 +101,20 @@ export function tracePath(
   cap = 5,
 ): TraceHop[] {
   const data = cliCall("trace_path", { project, function_name: functionName, direction, depth });
-  const arr = (data?.callers ?? data?.callees ?? []) as any[];
+  const arr = Array.isArray(data?.callers)
+    ? data.callers
+    : Array.isArray(data?.callees) ? data.callees : [];
   const out: TraceHop[] = [];
   const seen = new Set<string>();
-  for (const c of arr) {
-    const name = c.name || c.qualified_name || "?";
+  for (const candidate of arr) {
+    if (!isJsonObject(candidate)) continue;
+    const name = typeof candidate.name === "string"
+      ? candidate.name
+      : typeof candidate.qualified_name === "string" ? candidate.qualified_name : "?";
     // file-path-ish names (contain "/") are module nodes, not callers — skip.
     if (name.includes("/") || seen.has(name)) continue;
     seen.add(name);
-    out.push({ name, hop: c.hop ?? 0 });
+    out.push({ name, hop: typeof candidate.hop === "number" ? candidate.hop : 0 });
     if (out.length >= cap) break;
   }
   return out;
