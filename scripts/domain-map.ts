@@ -3,7 +3,7 @@
  * domain-map.ts — Single source of truth for persona→domain mapping
  *
  * All persona→domain lookups should import from this file.
- * Domains match those in domain-classifier.ts: ffb, jhf-trading, zouroboros, infrastructure, personal, shared
+ * Domains match those in domain-classifier.ts: jhf-trading, zouroboros, infrastructure, personal, shared
  */
 
 import type { Domain } from "./domain-classifier.ts";
@@ -15,37 +15,6 @@ export type { Domain };
  * Personas not listed here default to "shared".
  */
 export const PERSONA_DOMAIN_MAP: Record<string, Domain> = {
-  // ── FFB (Fauna & Flora Botanicals) ──
-  "brand-guardian": "ffb",
-  "community-ambassador": "ffb",
-  "ecommerce-merchandising-manager": "ffb",
-  "marketing-content-creator": "ffb",
-  "marketing-growth-hacker": "ffb",
-  "marketing-instagram-curator": "ffb",
-  "marketing-pinterest-specialist": "ffb",
-  "marketing-reddit-community-builder": "ffb",
-  "marketing-social-media-strategist": "ffb",
-  "marketing-tiktok-strategist": "ffb",
-  "marketing-twitter-engager": "ffb",
-  "twitter-engager": "ffb",
-  "email-automation-flow-designer": "ffb",
-  "loyalty-program-architect": "ffb",
-  "customer-success-manager": "ffb",
-  "customer-support-specialist": "ffb",
-  "ugc-content-coordinator": "ffb",
-  "social-proof-collector": "ffb",
-  "subscription-retention-specialist": "ffb",
-  "pr-launch-specialist": "ffb",
-  "event-experience-designer": "ffb",
-  "conversion-rate-optimizer": "ffb",
-  "content-gap-analyst": "ffb",
-  "technical-seo-auditor": "ffb",
-  "local-seo-strategist": "ffb",
-  "video-seo-specialist": "ffb",
-  "voice-search-optimizer": "ffb",
-  "analytics-insights-reporter": "ffb",
-  "competitive-intelligence-analyst": "ffb",
-
   // ── JHF Trading / Finance ──
   "financial-advisor": "jhf-trading",
   "financial-modeling-analyst": "jhf-trading",
@@ -97,6 +66,9 @@ export const PERSONA_DOMAIN_MAP: Record<string, Domain> = {
   "alaric": "personal",
 
   // ── Specialized (shared — cross-domain) ──
+  // Repurposed marketing/brand personas — serve Aventurine Capital + Zouroboros
+  "brand-guardian": "shared",
+  "marketing-content-creator": "shared",
   "hermes-agent": "shared",
   "senior-project-manager": "shared",
   "studio-operations": "shared",
@@ -138,7 +110,7 @@ export const PERSONA_DOMAIN_MAP: Record<string, Domain> = {
  * instead of a single domain. Used by session-briefing.ts for aggregated context.
  */
 export const MULTI_DOMAIN_PERSONAS: Record<string, Domain[]> = {
-  "alaric": ["zouroboros", "jhf-trading", "ffb", "infrastructure", "personal"],
+  "alaric": ["zouroboros", "jhf-trading", "infrastructure", "personal"],
 };
 
 /**
@@ -184,17 +156,6 @@ export const DEFAULT_POOLS: { name: string; description: string; members: string
       "financial-advisor", "financial-modeling-analyst", "financial-research-analyst",
       "quantitative-developer", "portfolio-risk-manager", "algorithmic-trading-strategist",
       "tax-optimization-strategist", "retirement-planning-advisor", "estate-planning-advisor",
-    ],
-  },
-  {
-    name: "ffb-ops",
-    description: "Fauna & Flora Botanicals marketing, operations, and support",
-    members: [
-      "brand-guardian", "marketing-content-creator", "marketing-growth-hacker",
-      "marketing-instagram-curator", "marketing-tiktok-strategist", "marketing-social-media-strategist",
-      "email-automation-flow-designer", "customer-success-manager", "customer-support-specialist",
-      "ecommerce-merchandising-manager", "subscription-retention-specialist",
-      "technical-seo-auditor", "analytics-insights-reporter", "conversion-rate-optimizer",
     ],
   },
   {

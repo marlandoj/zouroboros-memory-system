@@ -48,6 +48,7 @@ function log(message: string) {
 
 function run(dryRun: boolean, verbose: boolean): PromotionResult {
   const db = new Database(DB_PATH);
+  db.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;");
   const result: PromotionResult = {
     promoted: 0,
     skipped: 0,

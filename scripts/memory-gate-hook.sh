@@ -15,6 +15,17 @@ if [[ "$ACTIVE_PERSONA" == "fe5d7648" ]]; then exit 0; fi
 
 if [[ -z "$PROMPT" ]]; then exit 0; fi
 
+# ZOU-451: inject top instincts (behavioral patterns) alongside memory facts.
+# Domain-aware (prompt text boosts matching domains), additive, fail-open.
+# Disable instinct injection entirely with INSTINCT_INJECT=0; no-op when the store is absent/empty.
+# Semantic search arm (blended-rank vector retrieval) is ON by default; disable with INSTINCT_SEMANTIC=0.
+# Both env vars survive the process boundary — bun inherits them from this shell.
+if [[ "${INSTINCT_INJECT:-1}" == "1" && -f /home/workspace/.zo/instincts/instincts.yaml ]]; then
+  INSTINCTS=$(timeout 5 bun /home/workspace/Skills/instinct-harvester/scripts/observer.ts \
+    brief --top 5 --context "$PROMPT" 2>/dev/null)
+  [[ -n "$INSTINCTS" ]] && printf '<instincts>\n%s\n</instincts>\n' "$INSTINCTS"
+fi
+
 PAYLOAD=$(jq -n --arg m "$PROMPT" --arg p "$PERSONA" '{message:$m, persona:$p}')
 
 # Gate daemon requires a bearer token; read it from secrets if not already in env.

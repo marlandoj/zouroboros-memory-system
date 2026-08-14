@@ -17,8 +17,9 @@
  * Backward compatible with v1/v2 facts DB.
  */
 
-import { Database } from "bun:sqlite";
+import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { randomUUID, createHash } from "crypto";
+import { execFileSync } from "child_process";
 import { join } from "path";
 import { readFileSync } from "fs";
 import { computeGraphBoost, findGraphNeighbors } from "./graph-boost";
@@ -832,7 +833,7 @@ async function ftsSearch(query: string, options: { persona?: string; limit?: num
 
   if (!safeQuery) return [];
 
-  const params: unknown[] = [safeQuery, nowSec];
+  const params: SQLQueryBindings[] = [safeQuery, nowSec];
   let entityFilter = "";
   if (persona) { entityFilter += " AND f.persona = ?"; params.push(persona); }
   if (entity) { entityFilter += " AND f.entity = ?"; params.push(entity); }
@@ -909,7 +910,7 @@ async function backfillEmbeddings(batchSize: number = 50): Promise<{ processed: 
       db.prepare(`
         INSERT INTO fact_embeddings (fact_id, embedding, model)
         VALUES (?, ?, ?)
-      `).run(row.id, Buffer.from(new Float32Array(embedding).buffer), EMBEDDING_MODEL);
+      `).run(row.id as string, Buffer.from(new Float32Array(embedding).buffer), EMBEDDING_MODEL);
       processed++;
       process.stdout.write(".");
     } else {
@@ -1068,7 +1069,7 @@ function parseRelativeTime(input: string): number {
 async function findEpisodes(query: TemporalQuery): Promise<Episode[]> {
   const db = await initDb();
   const conditions: string[] = [];
-  const params: unknown[] = [];
+  const params: SQLQueryBindings[] = [];
   
   if (query.since) {
     conditions.push("e.happened_at >= ?");
@@ -1327,6 +1328,55 @@ Keep the same general structure but adjust executors, timeouts, or add fallbacks
       fallbackExecutor: s.fallbackExecutor ? String(s.fallbackExecutor) : undefined,
       notes: s.notes ? String(s.notes) : undefined,
     }));
+    if (validSteps.some(step => !step.taskPattern.trim())) throw new Error("Procedure steps require non-empty taskPattern values");
+
+    const constitutionGatePath = "/home/workspace/Skills/zouroboros-governance/scripts/constitution-gate.ts";
+    execFileSync("bun", [
+      constitutionGatePath,
+      "check",
+      "--phase",
+      "preflight",
+      "--input",
+      JSON.stringify({
+        operation: `procedure-evolution:${procedureName}:v${current.version + 1}`,
+        description: `Evolve procedure ${procedureName} from recorded failure episodes`,
+        targetFiles: [DB_PATH],
+        modifiesModelWeights: false,
+        reversible: true,
+        rollbackPlan: `Retain and restore procedure version ${current.version} (${current.id})`,
+        blastRadius: "local",
+        humanApproved: false,
+        provenance: {
+          rationale: rationale || "Improve procedure performance from recorded failures",
+          evidence: allFailures.map(failure => `episode:${String(failure.id)}`),
+          actor: "zouroboros-memory",
+        },
+        budgetBounded: true,
+        layerIntegrity: true,
+        failClosed: true,
+      }),
+    ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+
+    const consensusGatePath = "/home/workspace/Skills/consensus-gate/scripts/consensus-gate.ts";
+    let validationResult: any;
+    try {
+      const validationOutput = execFileSync("bun", [
+        consensusGatePath,
+        "validate",
+        "--code",
+        JSON.stringify(validSteps, null, 2),
+        "--criteria",
+        "correctness,consistency,security",
+        "--label",
+        `procedure-${procedureName}-v${current.version + 1}`,
+      ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+      validationResult = JSON.parse(validationOutput);
+    } catch (gateErr: any) {
+      throw new Error(`Procedure evolution blocked by consensus gate: ${gateErr.message || String(gateErr)}`);
+    }
+    if (validationResult?.consensus?.pass !== true) {
+      throw new Error(`Procedure evolution blocked: consensus gate did not return an unanimous pass`);
+    }
 
     // Create evolved procedure (starts with 0 runs — must be validated before trusting)
     const evolved = await createProcedure({
@@ -1634,7 +1684,7 @@ Examples:
   bun memory.ts store --entity "user" --key "name" --value "Alice"
   bun memory.ts hybrid "router password"
   bun memory.ts migrate
-  bun memory.ts episodes --entity "swarm.ffb" --since "7 days ago"
+  bun memory.ts episodes --entity "swarm.demo" --since "7 days ago"
   bun memory.ts episodes --create --summary "Fixed auth bug" --outcome success --entities "auth,security"
   bun memory.ts procedures --create --name "deploy-flow" --steps '[{"executor":"claude-code","taskPattern":"build","timeoutSeconds":300}]'
   bun memory.ts procedures --auto "swarm" --since "7 days ago"

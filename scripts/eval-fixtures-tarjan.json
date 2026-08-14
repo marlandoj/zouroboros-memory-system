@@ -8,19 +8,19 @@
       "description": "An open loop connected to a hub node that connects 5 workstreams should be protected",
       "graph": {
         "type": "star",
-        "center": { "entity": "project.ffb", "key": "hub", "value": "FFB Project Hub" },
+        "center": { "entity": "project.demo", "key": "hub", "value": "Demo Project Hub" },
         "leaves": [
-          { "entity": "project.ffb", "key": "supplier", "value": "Supplier management" },
-          { "entity": "project.ffb", "key": "marketing", "value": "Marketing campaigns" },
-          { "entity": "project.ffb", "key": "inventory", "value": "Inventory tracking" },
-          { "entity": "project.ffb", "key": "website", "value": "Website updates" },
-          { "entity": "project.ffb", "key": "compliance", "value": "Compliance review" }
+          { "entity": "project.demo", "key": "supplier", "value": "Supplier management" },
+          { "entity": "project.demo", "key": "marketing", "value": "Marketing campaigns" },
+          { "entity": "project.demo", "key": "inventory", "value": "Inventory tracking" },
+          { "entity": "project.demo", "key": "website", "value": "Website updates" },
+          { "entity": "project.demo", "key": "compliance", "value": "Compliance review" }
         ]
       },
       "openLoop": {
-        "title": "Resolve FFB hub integration issue",
-        "summary": "Critical blocker affecting all FFB workstreams",
-        "entity": "project.ffb",
+        "title": "Resolve Demo hub integration issue",
+        "summary": "Critical blocker affecting all Demo workstreams",
+        "entity": "project.demo",
         "kind": "bug",
         "priority": 0.9
       },

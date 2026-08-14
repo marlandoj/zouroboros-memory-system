@@ -137,7 +137,7 @@ Reference related entities in open loop summaries:
 ```bash
 bun scripts/memory.ts open-loops \
   --title "Fix [[system.zo.memory]] gate latency" \
-  --summary "Investigate why [[model.qwen2.5]] takes 4s for HyDE expansion"
+  --summary "Investigate why [[model.gpt-4o-mini]] takes 4s for HyDE expansion"
 ```
 
 ### In Episode Summaries
@@ -333,8 +333,8 @@ bun scripts/memory.ts consolidate
 
 ```markdown
 [[incident.2026-03-25]]: [[system.zo.memory]] gate timeout
-[[incident.2026-03-25.cause]]: [[model.qwen2.5]] cold start
-[[incident.2026-03-25.resolution]]: Increased [[config.keep_alive]]
+[[incident.2026-03-25.cause]]: [[provider.openai]] rate limit during HyDE expansion
+[[incident.2026-03-25.resolution]]: Added [[config.retry_backoff]]
 ```
 
 ### Agent/Persona Context

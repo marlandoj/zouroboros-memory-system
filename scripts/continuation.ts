@@ -375,9 +375,9 @@ export function autoResolveStaleLoops(
 
   // Fetch stale loops
   const staleLoops = db.prepare(`
-    SELECT id, title, entity FROM open_loops
+    SELECT id, title, summary, entity FROM open_loops
     WHERE status = 'stale' AND updated_at < ?
-  `).all(staleThreshold) as Array<{ id: string; title: string; entity: string | null }>;
+  `).all(staleThreshold) as Array<{ id: string; title: string; summary: string; entity: string | null }>;
 
   let resolved = 0;
   let skipped = 0;
@@ -567,7 +567,22 @@ export function upsertOpenLoop(db: Database, input: OpenLoopInput): OpenLoopReco
     LIMIT 1
   `).get(fingerprint) as Record<string, unknown> | null;
 
+  // Don't re-open a loop that was already resolved/superseded
+  if (!existing && status === "open") {
+    const closed = db.prepare(`
+      SELECT id FROM open_loops
+      WHERE fingerprint = ? AND status IN ('resolved','superseded')
+      LIMIT 1
+    `).get(fingerprint) as Record<string, unknown> | null;
+    if (closed) {
+      return { id: closed.id as string, persona, title, summary, kind, status: "resolved", priority, entity, fingerprint } as OpenLoopRecord;
+    }
+  }
+
   if (existing) {
+    const existingSource = typeof existing.source === "string" ? existing.source : null;
+    const existingEpisodeId = typeof existing.related_episode_id === "string" ? existing.related_episode_id : null;
+    const existingId = existing.id as string;
     db.prepare(`
       UPDATE open_loops
       SET summary = ?, priority = ?, entity = ?, source = ?, related_episode_id = ?, metadata = ?, updated_at = ?, status = ?
@@ -576,18 +591,18 @@ export function upsertOpenLoop(db: Database, input: OpenLoopInput): OpenLoopReco
       summary,
       priority,
       entity,
-      input.source || existing.source || null,
-      input.relatedEpisodeId || existing.related_episode_id || null,
+      input.source || existingSource,
+      input.relatedEpisodeId || existingEpisodeId,
       safeJson(input.metadata) || (existing.metadata as string) || null,
       nowSec,
       status,
-      existing.id
+      existingId
     );
 
-    syncOpenLoopFts(db, existing.id as string, title, summary, kind, status, entity);
+    syncOpenLoopFts(db, existingId, title, summary, kind, status, entity);
 
     return {
-      id: existing.id as string,
+      id: existingId,
       persona,
       title,
       summary,
@@ -595,8 +610,8 @@ export function upsertOpenLoop(db: Database, input: OpenLoopInput): OpenLoopReco
       status,
       priority,
       entity,
-      source: (input.source || existing.source) as string | undefined,
-      relatedEpisodeId: (input.relatedEpisodeId || existing.related_episode_id) as string | null | undefined,
+      source: input.source || existingSource || undefined,
+      relatedEpisodeId: input.relatedEpisodeId || existingEpisodeId,
       metadata: input.metadata,
       fingerprint,
       createdAt: existing.created_at as number,
@@ -675,7 +690,7 @@ export function resolveMatchingOpenLoops(db: Database, text: string): number {
         UPDATE open_loops
         SET status = 'resolved', resolved_at = ?, updated_at = ?
         WHERE id = ?
-      `).run(Math.floor(Date.now() / 1000), Math.floor(Date.now() / 1000), row.id);
+      `).run(Math.floor(Date.now() / 1000), Math.floor(Date.now() / 1000), row.id as string);
       syncOpenLoopFts(db, row.id as string, row.title as string, row.summary as string, row.kind as OpenLoopKind, "resolved", row.entity as string | null);
       resolved++;
     }
@@ -703,13 +718,17 @@ export function shouldSkipExtractionSource(source: string): boolean {
   const basename = source.split("/").pop() ?? source;
   const lowerBase = basename.toLowerCase();
   const lowerSrc = source.toLowerCase();
+  if (/^conversation:[^/]+\/.+\.(md|json|txt|csv|yaml|yml|html|jsonl|tsv)$/i.test(source)) return true;
   const docNames = new Set([
     "skill.md", "readme.md", "claude.md", "usage.md", "agents.md",
     "identity.md", "soul.md", "spec.md", "changelog.md",
-    "integration.md", "notes.md",
+    "integration.md", "notes.md", "examples.md", "evaluation.md",
+    "forms.md", "maps.md", "troubleshooting.md", "persona-framework.md",
+    "backlog.md",
   ]);
   if (docNames.has(lowerBase)) return true;
   if (/(^|[-_/])(audit|review|report|findings|research|plan|analysis)([-_./]|$)/.test(lowerSrc)) return true;
+  if (/-(prompt|status|brief|summary|digest)(-\d{4}-\d{2}-\d{2})?\.md$/i.test(lowerBase)) return true;
   if (/\/(sample-|fixture-)/.test(source) || source.includes("__tests__")) return true;
   return false;
 }

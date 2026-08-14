@@ -224,7 +224,7 @@ Rules:
 - Assign decay_class: "permanent" for user preferences/identity, "stable" for project decisions/findings, "active" for current tasks/sprints, "session" for today-only context
 - Assign confidence: 1.0 for explicit statements, 0.8 for strong implications, 0.6 for inferences
 - Include source_quote: the exact text that supports this fact
-- entity format: "category.subject" (e.g., "project.ffb-site", "user", "decision.hosting", "finding.performance")
+- entity format: "category.subject" (e.g., "project.demo-site", "user", "decision.hosting", "finding.performance")
 
 Output ONLY a valid JSON array of objects with these fields: entity, key, value, category, decay_class, confidence, source_quote
 If nothing worth extracting, return [].

@@ -21,7 +21,7 @@ export interface ResolvedWikilink extends ParsedWikilink {
 }
 
 // --- Exclusion Filter ---
-// Entity-like pattern: category.subject format (e.g., project.ffb, system.memory)
+// Entity-like pattern: category.subject format (e.g., project.demo, system.memory)
 export const ENTITY_LIKE_PATTERN = /\b([a-z][a-z0-9_-]+\.(?:[a-z][a-z0-9_-]+))\b/g;
 
 // File extensions to exclude from wikilink wrapping

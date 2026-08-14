@@ -12,11 +12,22 @@
 
 import { Database } from "bun:sqlite";
 import { randomUUID, createHash } from "crypto";
-import { generate as mcGenerate, embeddings as mcEmbeddings } from "./model-client";
+import { appendFileSync, mkdirSync } from "fs";
+import { dirname } from "path";
+import { generate as mcGenerate, embeddings as mcEmbeddings, loadModelEnv } from "./model-client";
 
 const EMBEDDING_MODEL = process.env.ZO_EMBEDDING_MODEL || "text-embedding-3-small";
 
 const MIN_RELEVANCE_SCORE = 0.35;
+
+// Memory-poisoning guard: Mimir's synthesis is LLM output derived from retrieved
+// (possibly attacker-influenced) facts. Auto-writing it back into the live facts
+// table would launder untrusted content into long-term memory, so the feedback
+// loop is fail-closed by default — candidates are quarantined to a pending-review
+// log and only an explicit operator opt-in promotes them to live storage.
+const FEEDBACK_AUTOSTORE = process.env.ZO_MIMIR_FEEDBACK_AUTOSTORE === "1";
+const FEEDBACK_PENDING_PATH =
+  process.env.ZO_MIMIR_FEEDBACK_PENDING || "/home/workspace/.zo/memory/mimir-feedback-pending.jsonl";
 
 // ── Synthesis cache (avoids repeated LLM calls for identical Q+facts) ──────
 // Key: sha256(question + filtered_facts)
@@ -141,13 +152,28 @@ Question: ${question}
 
 Answer as Mimir would (or NO_RELEVANT_FACTS if nothing relates to the question):`;
 
+  // Optional quality upgrade: route Mimir's synthesis through a higher-quality
+  // model (e.g. "moa:default" — Mixture-of-Agents, Opus-parity prose synthesis).
+  // Opt-in via ZO_MODEL_MIMIR_SYNTHESIS; unset → uses the briefing workload default.
+  // On failure of the override (e.g. MoA outage) we fall back to the default model
+  // so synthesis never hard-fails just because the premium path is down.
+  loadModelEnv();
+  const synthModel = process.env.ZO_MODEL_MIMIR_SYNTHESIS || undefined;
   try {
-    const result = await mcGenerate({
-      prompt,
-      workload: "briefing",
-      temperature: 0.4,
-      maxTokens: 400,
-    });
+    let result;
+    try {
+      result = await mcGenerate({
+        prompt,
+        workload: "briefing",
+        temperature: 0.4,
+        maxTokens: 400,
+        model: synthModel,
+      });
+    } catch (overrideErr) {
+      if (!synthModel) throw overrideErr;
+      console.warn(`[mimir-synthesize] synthesis model ${synthModel} failed (${overrideErr}); falling back to default briefing model`);
+      result = await mcGenerate({ prompt, workload: "briefing", temperature: 0.4, maxTokens: 400 });
+    }
     const answer = result.content.trim();
     // LLM determined none of the retrieved facts are relevant
     if (answer === "NO_RELEVANT_FACTS" || answer.startsWith("NO_RELEVANT_FACTS")) {
@@ -240,6 +266,26 @@ export async function generateFeedbackFacts(
 ): Promise<string[]> {
   const facts = await extractFeedbackFacts(question, synthesizedAnswer);
   if (facts.length === 0) return [];
+
+  // Fail-closed: do not auto-write synthesis-derived facts to live memory.
+  // Quarantine them for human/agent review unless explicitly approved.
+  if (!FEEDBACK_AUTOSTORE) {
+    try {
+      mkdirSync(dirname(FEEDBACK_PENDING_PATH), { recursive: true });
+      const ts = Math.floor(Date.now() / 1000);
+      const lines =
+        facts
+          .map((f) => JSON.stringify({ ts, question: question.slice(0, 200), dbPath, fact: f }))
+          .join("\n") + "\n";
+      appendFileSync(FEEDBACK_PENDING_PATH, lines);
+      console.log(
+        `[mimir-synthesize] ${facts.length} feedback fact(s) quarantined to ${FEEDBACK_PENDING_PATH} (autostore disabled; set ZO_MIMIR_FEEDBACK_AUTOSTORE=1 to promote)`,
+      );
+    } catch (err) {
+      console.error(`[mimir-synthesize] Failed to quarantine feedback facts: ${err}`);
+    }
+    return [];
+  }
 
   const db = new Database(dbPath);
   db.exec("PRAGMA journal_mode = WAL");

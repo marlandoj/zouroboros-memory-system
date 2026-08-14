@@ -17,6 +17,7 @@ import {
   resolveMatchingOpenLoops,
   upsertOpenLoop,
 } from "./continuation";
+import { insertFactWithProspectiveProvenance } from "./prospective-observability";
 
 // --- Configuration ---
 export const DB_PATH = process.env.ZO_MEMORY_DB || "/home/workspace/.zo/memory/shared-facts.db";
@@ -107,7 +108,7 @@ export function getExtractorDb(): Database {
   return db;
 }
 
-// --- Ollama ---
+// --- Fact extraction (LLM via model-client) ---
 
 const EXTRACTION_PROMPT = `You are a fact extractor. Given a conversation or document, extract structured, reusable facts.
 
@@ -118,7 +119,7 @@ Rules:
 - Assign decay_class: "permanent" for user preferences/identity/personality, "stable" for project decisions/architecture, "active" for current tasks/in-progress work, "session" for one-off context
 - Assign confidence: 1.0 for explicit statements, 0.8 for strong implications, 0.6 for weak inferences
 - Include source_quote: the exact supporting text from the transcript (max 200 chars)
-- entity format: "category.subject" (e.g., "user.preference", "project.ffb-site", "decision.hosting", "system.model-routing", "contact.supplier-x")
+- entity format: "category.subject" (e.g., "user.preference", "project.demo-site", "decision.hosting", "system.model-routing", "contact.supplier-x")
 - Keep values concise but complete — the full useful fact, not a summary
 
 Output ONLY a valid JSON array with: entity, key, value, category, decay_class, confidence, source_quote
@@ -258,16 +259,31 @@ export async function extractAndStoreFacts(
     const expiresAt = TTL_DEFAULTS[fact.decay_class] ? nowSec + TTL_DEFAULTS[fact.decay_class]! : null;
     const text2 = `${fact.entity} ${fact.key}: ${fact.value}`;
 
-    db.prepare(`
-      INSERT INTO facts (id, persona, entity, key, value, text, category, decay_class,
-                         importance, source, created_at, expires_at, last_accessed, confidence, metadata)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      id, persona, fact.entity, fact.key, fact.value, text2,
-      fact.category, fact.decay_class, 1.0, `fact-extractor:${options.source}`,
-      now, expiresAt, nowSec, fact.confidence,
-      JSON.stringify({ source_quote: fact.source_quote })
-    );
+    const factSource = `fact-extractor:${options.source}`;
+    const insertFact = () => {
+      db.prepare(`
+        INSERT INTO facts (id, persona, entity, key, value, text, category, decay_class,
+                           importance, source, created_at, expires_at, last_accessed, confidence, metadata)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        id, persona, fact.entity, fact.key, fact.value, text2,
+        fact.category, fact.decay_class, 1.0, factSource,
+        now, expiresAt, nowSec, fact.confidence,
+        JSON.stringify(Object.assign(
+          { source_quote: fact.source_quote },
+          process.env.ZO_TRACE_ID ? { trace_id: process.env.ZO_TRACE_ID } : {}
+        ))
+      );
+    };
+    insertFactWithProspectiveProvenance({
+      db,
+      traceId: process.env.ZO_TRACE_ID,
+      factId: id,
+      source: factSource,
+      captureMethod: options.captureMode,
+      capturedAtSec: nowSec,
+      insertFact,
+    });
 
     const embedding = await getEmbedding(text2);
     if (embedding) {

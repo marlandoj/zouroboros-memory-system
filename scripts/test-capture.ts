@@ -4,7 +4,7 @@
  *
  * Tests fact extraction parsing, dedup, contradiction detection,
  * co-capture linking, and capture log against a temporary SQLite database.
- * Does NOT require Ollama (mocks the extraction response).
+ * Does NOT require an LLM (mocks the extraction response).
  *
  * Usage: bun test-capture.ts
  */
@@ -170,10 +170,10 @@ function testContradictionHandling() {
   console.log("\n--- Test: Contradiction Handling ---");
   db = setupDb();
 
-  const oldId = insertFact(db, "project.ffb", "status", "Site launched");
+  const oldId = insertFact(db, "project.demo", "status", "Site launched");
 
   // Simulate contradiction: new fact supersedes old
-  const { contradicts } = checkExisting(db, "project.ffb", "status", "Site redesign in progress");
+  const { contradicts } = checkExisting(db, "project.demo", "status", "Site redesign in progress");
   assert(contradicts === oldId, "Contradiction detected against old fact");
 
   // Simulate what auto-capture does: insert new fact, create supersedes link, halve old confidence
@@ -181,7 +181,7 @@ function testContradictionHandling() {
   const now = Date.now();
   db.prepare(`
     INSERT INTO facts (id, persona, entity, key, value, text, category, decay_class, importance, source, created_at, last_accessed, confidence)
-    VALUES (?, 'shared', 'project.ffb', 'status', 'Site redesign in progress', 'project.ffb status: Site redesign in progress', 'fact', 'active', 1.0, 'auto-capture:test', ?, ?, 0.8)
+    VALUES (?, 'shared', 'project.demo', 'status', 'Site redesign in progress', 'project.demo status: Site redesign in progress', 'fact', 'active', 1.0, 'auto-capture:test', ?, ?, 0.8)
   `).run(newId, now, Math.floor(now / 1000));
 
   db.prepare("INSERT INTO fact_links (source_id, target_id, relation, weight) VALUES (?, ?, 'supersedes', 1.0)")

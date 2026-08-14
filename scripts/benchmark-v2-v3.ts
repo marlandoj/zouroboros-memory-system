@@ -8,25 +8,24 @@
  *   3. Auto-capture extraction quality
  *
  * Uses a temporary SQLite database with synthetic but realistic facts.
- * Requires OpenAI for default generation workloads and Ollama for local embeddings.
+ * Requires OpenAI for both generation workloads and embeddings.
  *
- * Usage: bun benchmark-v2-v3.ts [--skip-ollama]
+ * Usage: bun benchmark-v2-v3.ts [--skip-embeddings]
  */
 
 import { Database } from "bun:sqlite";
 import { randomUUID, createHash } from "crypto";
 import { unlinkSync, existsSync, writeFileSync } from "fs";
 import { computeGraphBoost, findGraphNeighbors } from "./graph-boost";
-import { generate, modelHealthCheck } from "./model-client";
+import { generate, modelHealthCheck, embeddings } from "./model-client";
 
 // --- Configuration ---
 const TEST_DB_PATH = "/dev/shm/zo-memory-benchmark.db";
-const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434";
-const EMBEDDING_MODEL = "nomic-embed-text";
+const EMBEDDING_MODEL = "text-embedding-3-small";
 const HYDE_MODEL = process.env.ZO_HYDE_MODEL || "openai:gpt-4o-mini";
 const GATE_MODEL = process.env.ZO_GATE_MODEL || "openai:gpt-4o-mini";
 const CAPTURE_MODEL = process.env.ZO_CAPTURE_MODEL || "openai:gpt-4o-mini";
-const SKIP_OLLAMA = process.argv.includes("--skip-ollama");
+const SKIP_EMBEDDINGS = process.argv.includes("--skip-embeddings");
 
 // --- Timing Utility ---
 function timer(): () => number {
@@ -138,15 +137,15 @@ interface SeedFact {
 
 function seedDatabase(db: Database): SeedFact[] {
   const facts: SeedFact[] = [
-    // FFB project cluster (should be linked)
-    { id: "", entity: "project.ffb-site", key: "name", value: "Fauna & Flora Botanicals e-commerce website built on Zo hosting", category: "project", decay: "permanent" },
-    { id: "", entity: "project.ffb-site", key: "stack", value: "React frontend with Hono API routes on zo.space, Stripe for payments", category: "fact", decay: "stable" },
-    { id: "", entity: "project.ffb-site", key: "status", value: "Sprint 3 remediation in progress, 7 of 9 tasks passing", category: "fact", decay: "active" },
-    { id: "", entity: "decision.ffb-hosting", key: "choice", value: "Selected Zo hosting over Shopify for full control and lower costs", category: "decision", decay: "permanent" },
-    { id: "", entity: "decision.ffb-payments", key: "choice", value: "Using Stripe Connect for payment processing with webhook integration", category: "decision", decay: "permanent" },
-    { id: "", entity: "project.ffb-site", key: "seo-audit", value: "Completed SEO audit showing missing meta descriptions on 12 product pages", category: "fact", decay: "active" },
+    // Demo project cluster (should be linked)
+    { id: "", entity: "project.demo-site", key: "name", value: "Demo Store e-commerce website built on Zo hosting", category: "project", decay: "permanent" },
+    { id: "", entity: "project.demo-site", key: "stack", value: "React frontend with Hono API routes on zo.space, Stripe for payments", category: "fact", decay: "stable" },
+    { id: "", entity: "project.demo-site", key: "status", value: "Sprint 3 remediation in progress, 7 of 9 tasks passing", category: "fact", decay: "active" },
+    { id: "", entity: "decision.demo-hosting", key: "choice", value: "Selected Zo hosting over Shopify for full control and lower costs", category: "decision", decay: "permanent" },
+    { id: "", entity: "decision.demo-payments", key: "choice", value: "Using Stripe Connect for payment processing with webhook integration", category: "decision", decay: "permanent" },
+    { id: "", entity: "project.demo-site", key: "seo-audit", value: "Completed SEO audit showing missing meta descriptions on 12 product pages", category: "fact", decay: "active" },
     // Memory system cluster (should be linked)
-    { id: "", entity: "system.memory", key: "version", value: "Hybrid SQLite plus vector search with nomic-embed-text embeddings", category: "fact", decay: "stable" },
+    { id: "", entity: "system.memory", key: "version", value: "Hybrid SQLite plus vector search with text-embedding-3-small embeddings", category: "fact", decay: "stable" },
     { id: "", entity: "system.memory", key: "database", value: "SQLite with FTS5 and WAL mode at .zo/memory/shared-facts.db", category: "fact", decay: "permanent" },
     { id: "", entity: "decision.memory-cli", key: "choice", value: "Use memory.ts as canonical CLI, supports store search hybrid index stats", category: "decision", decay: "permanent" },
     { id: "", entity: "system.memory", key: "gate", value: "Model-routed memory gate filters 40-60% of messages saving tokens", category: "fact", decay: "stable" },
@@ -158,13 +157,13 @@ function seedDatabase(db: Database): SeedFact[] {
     // Infrastructure cluster
     { id: "", entity: "system.zo", key: "backups", value: "Offsite backups via rclone to Google Drive weekly on Sundays", category: "fact", decay: "stable" },
     { id: "", entity: "system.zo", key: "database", value: "MariaDB running locally on 127.0.0.1:3306", category: "fact", decay: "stable" },
-    { id: "", entity: "system.zo", key: "model-routing", value: "OpenAI handles gate, HyDE, and capture workloads while Ollama hosts local nomic-embed-text embeddings", category: "fact", decay: "stable" },
+    { id: "", entity: "system.zo", key: "model-routing", value: "OpenAI handles gate, HyDE, and capture workloads as well as text-embedding-3-small embeddings", category: "fact", decay: "stable" },
     // Financial
     { id: "", entity: "portfolio", key: "broker", value: "Alpaca Markets paper trading account for strategy testing", category: "fact", decay: "stable" },
     { id: "", entity: "portfolio", key: "strategy", value: "Dollar cost averaging into VOO and QQQ with 5% single position limit", category: "decision", decay: "stable" },
     // Swarm orchestrator
     { id: "", entity: "system.swarm", key: "executors", value: "Four executors: claude-code hermes gemini codex registered in executor-registry.json", category: "fact", decay: "stable" },
-    { id: "", entity: "system.swarm", key: "performance", value: "FFB workload 11 tasks in 985s, bottleneck is Zo API latency 120-360s per prompt", category: "fact", decay: "active" },
+    { id: "", entity: "system.swarm", key: "performance", value: "Demo workload 11 tasks in 985s, bottleneck is Zo API latency 120-360s per prompt", category: "fact", decay: "active" },
     { id: "", entity: "decision.swarm-mcp", key: "choice", value: "Claude Code bridge must use --allowedTools for MCP tools, bypassPermissions insufficient", category: "decision", decay: "permanent" },
     // Additional facts for density
     { id: "", entity: "project.jhf-site", key: "name", value: "Jackson Heritage Financial website review and performance audit", category: "project", decay: "active" },
@@ -197,13 +196,13 @@ function seedGraphLinks(db: Database, facts: SeedFact[]): number {
 
   let linkCount = 0;
 
-  // FFB cluster: link project facts to decisions
-  const ffbFacts = facts.filter(f => f.entity.startsWith("project.ffb") || f.entity.startsWith("decision.ffb"));
-  for (let i = 0; i < ffbFacts.length; i++) {
-    for (let j = i + 1; j < ffbFacts.length; j++) {
-      const relation = ffbFacts[j].entity.startsWith("decision") ? "informed_by" : "related";
+  // Demo cluster: link project facts to decisions
+  const demoFacts = facts.filter(f => f.entity.startsWith("project.demo") || f.entity.startsWith("decision.demo"));
+  for (let i = 0; i < demoFacts.length; i++) {
+    for (let j = i + 1; j < demoFacts.length; j++) {
+      const relation = demoFacts[j].entity.startsWith("decision") ? "informed_by" : "related";
       db.prepare("INSERT OR IGNORE INTO fact_links (source_id, target_id, relation, weight) VALUES (?, ?, ?, ?)")
-        .run(ffbFacts[i].id, ffbFacts[j].id, relation, 0.8);
+        .run(demoFacts[i].id, demoFacts[j].id, relation, 0.8);
       linkCount++;
     }
   }
@@ -237,12 +236,12 @@ function seedGraphLinks(db: Database, facts: SeedFact[]): number {
     linkCount++;
   }
 
-  // Cross-cluster: ffb → swarm (swarm reviews ffb)
-  const ffbStatus = facts.find(f => f.entity === "project.ffb-site" && f.key === "status");
+  // Cross-cluster: demo → swarm (swarm reviews demo)
+  const demoStatus = facts.find(f => f.entity === "project.demo-site" && f.key === "status");
   const swarmExec = facts.find(f => f.entity === "system.swarm" && f.key === "executors");
-  if (ffbStatus && swarmExec) {
+  if (demoStatus && swarmExec) {
     db.prepare("INSERT OR IGNORE INTO fact_links (source_id, target_id, relation, weight) VALUES (?, ?, ?, ?)")
-      .run(swarmExec.id, ffbStatus.id, "reviews", 0.5);
+      .run(swarmExec.id, demoStatus.id, "reviews", 0.5);
     linkCount++;
   }
 
@@ -252,15 +251,8 @@ function seedGraphLinks(db: Database, facts: SeedFact[]): number {
 // --- Embedding Helper ---
 async function getEmbedding(text: string): Promise<number[] | null> {
   try {
-    const resp = await fetch(`${OLLAMA_URL}/api/embeddings`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: EMBEDDING_MODEL, prompt: text.slice(0, 8000) }),
-      signal: AbortSignal.timeout(15000),
-    });
-    if (!resp.ok) return null;
-    const data = await resp.json() as { embedding?: number[] };
-    return data.embedding;
+    const result = await embeddings(text.slice(0, 8000));
+    return result.embedding && result.embedding.length > 0 ? result.embedding : null;
   } catch { return null; }
 }
 
@@ -421,7 +413,7 @@ async function benchmarkGraphSearch(db: Database, facts: SeedFact[]) {
   console.log("=".repeat(60));
 
   const queries = [
-    { q: "FFB site hosting decision", expectedCluster: "ffb", description: "Cluster query (FFB)" },
+    { q: "Demo site hosting decision", expectedCluster: "demo", description: "Cluster query (Demo)" },
     { q: "memory system database choice", expectedCluster: "memory", description: "Cluster query (memory)" },
     { q: "swarm executor MCP permissions", expectedCluster: "swarm", description: "Cluster query (swarm)" },
     { q: "user preferences timezone", expectedCluster: "user", description: "Orphan query (user prefs — no links)" },
@@ -506,7 +498,7 @@ async function benchmarkMemoryGate(db: Database) {
     { msg: "good morning how are you", expect: "skip", label: "Casual greeting" },
     { msg: "thanks for your help", expect: "skip", label: "Acknowledgment" },
     // SHOULD need memory (exit 0 or 3)
-    { msg: "what did we decide about FFB hosting?", expect: "memory", label: "Project decision" },
+    { msg: "what did we decide about Demo hosting?", expect: "memory", label: "Project decision" },
     { msg: "update the supplier scorecard", expect: "memory", label: "Workflow reference" },
     { msg: "how is the portfolio doing?", expect: "memory", label: "Ongoing tracking" },
     { msg: "where did we leave off on the swarm optimization?", expect: "memory", label: "Prior work status" },
@@ -649,8 +641,8 @@ async function benchmarkAutoCapture(db: Database) {
   console.log("BENCHMARK 3: Auto-Capture Extraction Quality");
   console.log("=".repeat(60));
 
-  const transcript = `User: Let's discuss the Fauna Flora site migration.
-Assistant: Sure, I'll review the current state. The FFB site is currently hosted on Zo with React and Hono. We migrated from the old static site in January.
+  const transcript = `User: Let's discuss the Demo Store site migration.
+Assistant: Sure, I'll review the current state. The Demo site is currently hosted on Zo with React and Hono. We migrated from the old static site in January.
 
 User: Right. We decided to use Stripe Connect for payments instead of the Shopify integration. Can you remind me why?
 Assistant: The decision was made because Stripe Connect gives us full control over the checkout flow, lower transaction fees at 2.9% plus 30 cents, and direct webhook integration with our Zo API routes. Shopify would have required their payment gateway and limited our customization.
@@ -680,7 +672,7 @@ Rules:
 - Assign decay_class: "permanent" for user preferences/identity, "stable" for project decisions, "active" for current tasks/sprints, "session" for today-only context
 - Assign confidence: 1.0 for explicit statements, 0.8 for strong implications, 0.6 for inferences
 - Include source_quote: the exact text from the transcript that supports this fact
-- entity format: "category.subject" (e.g., "project.ffb-site", "user", "decision.hosting")
+- entity format: "category.subject" (e.g., "project.demo-site", "user", "decision.hosting")
 
 Output ONLY a valid JSON array of objects with these fields: entity, key, value, category, decay_class, confidence, source_quote
 If nothing worth extracting, return [].
@@ -812,13 +804,13 @@ async function benchmarkLatency(db: Database) {
   console.log("BENCHMARK 4: End-to-End Search Latency");
   console.log("=".repeat(60));
 
-  if (SKIP_OLLAMA) {
-    console.log("  Skipped (--skip-ollama: embeddings required)");
+  if (SKIP_EMBEDDINGS) {
+    console.log("  Skipped (--skip-embeddings: embeddings required)");
     return;
   }
 
   const queries = [
-    "FFB hosting decision",
+    "Demo hosting decision",
     "memory system configuration",
     "user preferences",
   ];
@@ -929,7 +921,7 @@ function generateMarkdownReport(): string {
   let md = `# zo-memory-system Benchmark: v2.0 vs v3.0\n\n`;
   md += `**Date**: ${timestamp} UTC\n`;
   md += `**Database**: ${results.length > 0 ? "25 synthetic facts, seeded graph links" : "N/A"}\n`;
-  md += `**Configured Models**: ${SKIP_OLLAMA ? `generation=${GATE_MODEL}/${CAPTURE_MODEL}, embeddings skipped` : `embeddings=${EMBEDDING_MODEL}, generation=${HYDE_MODEL}/${GATE_MODEL}/${CAPTURE_MODEL}`}\n\n`;
+  md += `**Configured Models**: ${SKIP_EMBEDDINGS ? `generation=${GATE_MODEL}/${CAPTURE_MODEL}, embeddings skipped` : `embeddings=${EMBEDDING_MODEL}, generation=${HYDE_MODEL}/${GATE_MODEL}/${CAPTURE_MODEL}`}\n\n`;
 
   const categories = ["graph", "gate", "capture", "search"] as const;
   const labels: Record<string, string> = {
@@ -992,31 +984,17 @@ async function main() {
   console.log(`  ✓ ${GATE_MODEL}`);
   console.log(`  ✓ ${CAPTURE_MODEL}`);
 
-  // Check Ollama availability for embeddings
-  if (!SKIP_OLLAMA) {
-    try {
-      const resp = await fetch(`${OLLAMA_URL}/api/tags`, { signal: AbortSignal.timeout(5000) });
-      if (!resp.ok) throw new Error(`Status ${resp.status}`);
-      const data = await resp.json() as { models?: Array<{ name: string }> };
-      const models = data.models?.map((m: any) => m.name) || [];
-      console.log(`\nOllama: ✓ (${models.length} models loaded)`);
-
-      const required = [EMBEDDING_MODEL];
-      for (const m of required) {
-        const found = models.some((name: string) => name === m || name.startsWith(m + ":"));
-        console.log(`  ${found ? "✓" : "✗"} ${m}`);
-        if (!found) {
-          console.error(`Missing required model: ${m}. Run: ollama pull ${m}`);
-          process.exit(1);
-        }
-      }
-    } catch (err) {
-      console.error(`Ollama not reachable at ${OLLAMA_URL}: ${err}`);
-      console.log("Run with --skip-ollama to skip embedding-dependent benchmarks.");
+  // Check embedding availability (OpenAI via model-client)
+  if (!SKIP_EMBEDDINGS) {
+    const probe = await getEmbedding("benchmark embedding reachability probe");
+    if (!probe || probe.length === 0) {
+      console.error(`Embeddings not reachable via model-client (${EMBEDDING_MODEL}). Check OPENAI_API_KEY.`);
+      console.log("Run with --skip-embeddings to skip embedding-dependent benchmarks.");
       process.exit(1);
     }
+    console.log(`\nEmbeddings: ✓ (${EMBEDDING_MODEL}, ${probe.length}d)`);
   } else {
-    console.log("\nOllama embeddings: Skipped (--skip-ollama flag)");
+    console.log("\nEmbeddings: Skipped (--skip-embeddings flag)");
   }
 
   // Setup
@@ -1028,7 +1006,7 @@ async function main() {
   const linkCount = seedGraphLinks(db, facts);
   console.log(`  Created ${linkCount} graph links`);
 
-  if (!SKIP_OLLAMA) {
+  if (!SKIP_EMBEDDINGS) {
     console.log("  Generating embeddings (this may take a moment)...");
     const embCount = await seedEmbeddings(db);
     console.log(`  Generated ${embCount} embeddings`);

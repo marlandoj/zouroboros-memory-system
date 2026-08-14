@@ -180,7 +180,7 @@ Respond with ONLY a JSON array:`;
 
     // Auto-correct wikilinks
     const corrected = autoCorrectWikilinks(fact.value, db);
-    const storeValue = corrected.corrected_value;
+    const storeValue = corrected?.corrected_value ?? fact.value;
 
     const id = randomUUID();
     const nowSec = Math.floor(Date.now() / 1000);

@@ -302,7 +302,7 @@ But not [external](https://example.com/foo.md).
 
 Reference \`file 'IDENTITY/backend-architect.md'\` and \`file 'SOUL.md'\`.
 
-See also Notes/FFB_Canon/FFB_SKU_CANON.md and Skills/alpaca-trading-skill/SKILL.md in the tree.
+See also Notes/Reference/SKU_CANON.md and Skills/alpaca-trading-skill/SKILL.md in the tree.
 
 Tags: #vault-system #memory-v2 #todo-later
 

@@ -7,7 +7,7 @@
 ## Legend
 
 | Status | Icon | Meaning |
-|--------|------|---------|
+| --- | --- | --- |
 | Not Started | ⬜ | No work begun |
 | In Progress | 🔄 | Active development |
 | Blocked | 🚫 | External dependency |
@@ -15,7 +15,7 @@
 | Won't Do | ❌ | Rejected/descoped |
 
 | Priority | Tag | Criteria |
-|----------|-----|----------|
+| --- | --- | --- |
 | P0 (Critical) | `critical` | Blocks other work, high user impact |
 | P1 (High) | `high` | Significant value, moderate effort |
 | P2 (Medium) | `medium` | Nice-to-have, or high effort |
@@ -27,14 +27,16 @@
 
 Based on research into MemGPT's tiered-memory eviction (core/working/peripheral), these concepts were evaluated for integration into zouroboros-memory-system. See full analysis in research notes.
 
-### ✅ [MEM-001] Context Budget Awareness
+### ✅ \[MEM-001\] Context Budget Awareness
+
 **Status:** ✅ Done 2026-03-29
 **Priority:** P1 (High)
 **Effort:** Medium (2-3 days)
 **Tags:** `memgpt-inspired`, `swarm-integration`, `token-optimization`
-**Files:** `scripts/context-budget.ts`
+**Files:** `file scripts/context-budget.ts`
 
 **Implemented:**
+
 - `ContextBudget` interface with maxTokens, warning/critical thresholds
 - `updateBudget()` — tracks current usage, fires warnings at thresholds
 - `planCompression()` — priority-per-token greedy compression
@@ -45,15 +47,17 @@ Based on research into MemGPT's tiered-memory eviction (core/working/peripheral)
 
 ---
 
-### ✅ [MEM-002] Recursive Episode Summarization
+### ✅ \[MEM-002\] Recursive Episode Summarization
+
 **Status:** ✅ Done 2026-03-29
 **Priority:** P1 (High)
 **Effort:** Medium (2-3 days)
 **Tags:** `memgpt-inspired`, `continuation`, `compression`
-**Files:** `scripts/episode-summarizer.ts`
+**Files:** `file scripts/episode-summarizer.ts`
 
 **Implemented:**
-- `compressEpisodes()` — Ollama-powered compression of episode sequences
+
+- `compressEpisodes()` — model-routed compression of episode sequences (via `model-client`)
 - `generateSummary()` — structured JSON extraction (summary + keyDecisions + keyOutcomes)
 - `shouldSummarize()` — threshold check for FIFO eviction trigger
 - `getCompressedEpisode()` / `listCompressedEpisodes()` — compressed episode CRUD
@@ -62,57 +66,62 @@ Based on research into MemGPT's tiered-memory eviction (core/working/peripheral)
 
 ---
 
-### ✅ [MEM-003] Iterative Multi-Hop Retrieval
+### ✅ \[MEM-003\] Iterative Multi-Hop Retrieval
+
 **Status:** ✅ Done 2026-03-29
 **Priority:** P2 (Medium)
 **Effort:** High (4-5 days)
 **Tags:** `memgpt-inspired`, `search`, `graph`
-**Files:** `scripts/multi-hop.ts`
+**Files:** `file scripts/multi-hop.ts`
 
 **Implemented:**
+
 - `multiHopRetrieve()` — iterative BFS retrieval with configurable maxHops and early stopping at 0.75 confidence
 - `assessConfidence()` — relevance × entity diversity scoring for early stopping
-- `refineQueryForNextHop()` — Ollama-powered query refinement between hops
+- `refineQueryForNextHop()` — model-routed query refinement between hops (via `model-client`)
 - `semanticSearch()` + `getNeighbors()` — FTS + graph traversal per hop
 - `multiHopRetrieve()` returns `{ hopsTaken, confidence, allResults[], summary, reasoning }`
 - CLI: `retrieve`, `benchmark` (vs single-shot), `explain`
 
 ---
 
-### ❌ [MEM-004] LLM Self-Directed Memory Operations
-**Status:** ❌ Won't Do  
-**Priority:** P3 (Low)  
-**Effort:** High (5-7 days)  
+### ❌ \[MEM-004\] LLM Self-Directed Memory Operations
+
+**Status:** ❌ Won't Do
+**Priority:** P3 (Low)
+**Effort:** High (5-7 days)
 **Tags:** `memgpt-inspired`, `architecture`, `rejected`
 
-**Problem:**  
+**Problem:**
 MemGPT uses function calling to let the LLM decide when to store/retrieve. Your system uses external heuristics.
 
-**Decision:**  
+**Decision:**
 Reject this approach. Reasons:
+
 1. Your swarm uses diverse executors (not all support function calling)
 2. External heuristics (memory gate, continuation detection) provide consistent behavior across personas
 3. Adds complexity without clear benefit for multi-agent orchestration
 
-**Alternative:**  
+**Alternative:**
 Keep current hybrid approach (heuristics + optional explicit memory commands).
 
 ---
 
-### ❌ [MEM-005] Binary Working/Archival Split
-**Status:** ❌ Won't Do  
-**Priority:** P3 (Low)  
-**Effort:** Medium (3-4 days)  
+### ❌ \[MEM-005\] Binary Working/Archival Split
+
+**Status:** ❌ Won't Do
+**Priority:** P3 (Low)
+**Effort:** Medium (3-4 days)
 **Tags:** `memgpt-inspired`, `architecture`, `rejected`
 
-**Problem:**  
+**Problem:**
 MemGPT uses a binary split: working context (in-prompt) vs archival storage (vector DB).
 
-**Decision:**  
+**Decision:**
 Reject in favor of current 5-tier decay system. Your approach is more nuanced:
 
 | MemGPT | Zouroboros |
-|--------|------------|
+| --- | --- |
 | Working context | active (14d), session (24h), checkpoint (4h) |
 | Archival | stable (90d), permanent (never) |
 
@@ -122,14 +131,16 @@ The 5-tier system provides finer granularity for different use cases (swarm task
 
 ## Core System Enhancements
 
-### ✅ [MEM-101] Memory System Metrics Dashboard
+### ✅ \[MEM-101\] Memory System Metrics Dashboard
+
 **Status:** ✅ Done 2026-03-29
 **Priority:** P1 (High)
 **Effort:** Medium (3-4 days)
 **Tags:** `observability`, `dashboard`, `metrics`
-**Files:** `scripts/metrics.ts`
+**Files:** `file scripts/metrics.ts`
 
 **Implemented:**
+
 - `recordSearchOperation()` — latency, result count, hyde_used per operation
 - `recordCaptureOperation()` — facts stored/skipped/contradictions per capture
 - `recordGateDecision()` — inject/skip/error classification tracking
@@ -141,14 +152,16 @@ The 5-tier system provides finer granularity for different use cases (swarm task
 
 ---
 
-### ✅ [MEM-102] Import Pipeline Enhancements
+### ✅ \[MEM-102\] Import Pipeline Enhancements
+
 **Status:** ✅ Done 2026-03-29
 **Priority:** P2 (Medium)
 **Effort:** Low-Medium (1-2 days)
 **Tags:** `import`, `integrations`
-**Files:** `scripts/import.ts`
+**Files:** `file scripts/import.ts`
 
 **Implemented:**
+
 - `notion` — parses Notion JSON export (pages + blocks, title extraction, per-block facts)
 - `linear` — parses Linear JSON export (issues with identifier, state, priority, assignee)
 - `slack` — parses Slack export JSON (messages with user, timestamp, text)
@@ -157,15 +170,17 @@ The 5-tier system provides finer granularity for different use cases (swarm task
 
 ---
 
-### ✅ [MEM-103] Memory Conflict Resolution
+### ✅ \[MEM-103\] Memory Conflict Resolution
+
 **Status:** ✅ Done 2026-03-29
 **Priority:** P2 (Medium)
 **Effort:** Medium (2-3 days)
 **Tags:** `data-quality`, `resolution`
-**Files:** `scripts/conflict-resolver.ts`
+**Files:** `file scripts/conflict-resolver.ts`
 
 **Implemented:**
-- `isContradiction()` — numeric, temporal, and Ollama-powered semantic contradiction detection
+
+- `isContradiction()` — numeric, temporal, and model-routed semantic contradiction detection (via `model-client`)
 - `detectNewConflict()` — automatic conflict detection during fact storage
 - `resolveConflict()` — supersede (soft-delete loser), flag, merge workflows
 - `findEntityConflicts()` / `findEntityConflicts()` — query conflicts by fact or entity
@@ -175,14 +190,16 @@ The 5-tier system provides finer granularity for different use cases (swarm task
 
 ---
 
-### ✅ [MEM-104] Cross-Persona Memory Sharing
+### ✅ \[MEM-104\] Cross-Persona Memory Sharing
+
 **Status:** ✅ Done 2026-03-29
 **Priority:** P2 (Medium)
 **Effort:** Medium (2-3 days)
 **Tags:** `multi-persona`, `sharing`
-**Files:** `scripts/cross-persona.ts`
+**Files:** `file scripts/cross-persona.ts`
 
 **Implemented:**
+
 - `createPool()` / `listPools()` — shared fact pools with per-pool persona membership
 - `setInheritance()` — persona inheritance hierarchy with depth tracking
 - `getAccessiblePersonas()` — union of direct pool membership + inheritance chain
@@ -192,14 +209,16 @@ The 5-tier system provides finer granularity for different use cases (swarm task
 
 ---
 
-### ✅ [MEM-105] Enhanced Knowledge Graph
+### ✅ \[MEM-105\] Enhanced Knowledge Graph
+
 **Status:** ✅ Done 2026-03-29
 **Priority:** P2 (Medium)
 **Effort:** High (4-5 days)
 **Tags:** `graph`, `relationships`, `inference`
-**Files:** `scripts/graph-traversal.ts`
+**Files:** `file scripts/graph-traversal.ts`
 
 **Implemented:**
+
 - `getAncestors()` / `getDescendants()` — typed graph traversal (BFS, maxDepth, path reconstruction)
 - `detectCycles()` — Tarjan-style DFS cycle detection with deduplication
 - `inferRelations()` — co-occurrence-based relation inference from episode_entities
@@ -212,51 +231,92 @@ The 5-tier system provides finer granularity for different use cases (swarm task
 
 ## Performance & Scale
 
-### ⬜ [MEM-201] Vector Database Migration
-**Status:** ⬜ Not Started  
-**Priority:** P2 (Medium)  
-**Effort:** High (5-7 days)  
+### ⬜ \[MEM-201\] Vector Database Migration
+
+**Status:** ⬜ Not Started
+**Priority:** P2 (Medium)
+**Effort:** High (5-7 days)
 **Tags:** `performance`, `architecture`, `scale`
 
-**Description:**  
-Current: SQLite + in-memory vector similarity (brute force).  
-Proposed: Add LanceDB or pgvector for >10k facts.
+**Description:**
+Current: SQLite + in-memory vector similarity (brute force).
+Proposed: Add LanceDB or pgvector for &gt;10k facts.
 
 **Acceptance Criteria:**
-- [ ] LanceDB integration with SQLite fallback
-- [ ] Migration path for existing embeddings
-- [ ] Benchmark: query latency vs fact count
-- [ ] Hybrid search uses HNSW when available
 
-**Blockers:**  
-Current scale (~1k facts) doesn't justify complexity. Revisit at 10k+ facts.
+- [ ]  LanceDB integration with SQLite fallback
+
+- [ ]  Migration path for existing embeddings
+
+- [ ]  Benchmark: query latency vs fact count
+
+- [ ]  Hybrid search uses HNSW when available
+
+**Blockers:**
+Current scale (\~1k facts) doesn't justify complexity. Revisit at 10k+ facts.
 
 ---
 
-### ✅ [MEM-202] Embedding Model Selection
-**Status:** ✅ Done 2026-03-29
+### ⬜ \[MEM-205\] Lossless Context Densifier
+
+**Status:** ⬜ Not Started
+**Priority:** P1 (High)
+**Effort:** Small-Medium (2-3 days)
+**Tags:** `token-optimization`, `compression`, `headroom-port`
+**Plan:** `file Projects/benchmark-design/lossless-densifier-PROJECT.md`
+**Evidence:** `file packages/bench/data/compression/CORRELATION.md` (Phase 3, 2026-06-03)
+
+**Description:**
+Port Headroom's **lossless** densification into the live retrieval path. Compression
+bench measured **−13.15% context tokens at fidelity 1.000** on the real production memory
+DB (0.215 ms/item); savings track verbosity (r=0.737), concentrated in episodes (15.3%)
+and open loops (14.12%). The compressor (`structuralCompress`) is already written and
+tested in `file packages/bench/scripts/compression-benchmark.ts` — this is a wiring + hardening
+job, not new research.
+
+**Guardrail (Hermes lesson):** ship ONLY the structural lossless layer. Do **not** ship
+the reversible "remove & retrieve" / CCR layer (`reversibleCompress`) — Hermes proved it
+net-negative when an agent re-reads its own outputs, and memory retrieval has the same
+re-read risk. No Headroom dependency — port natively.
+
+**Acceptance Criteria:**
+
+- [ ]  Lossless densifier extracted to `file packages/memory/src/standalone/densifier.ts` (bench imports from it)
+
+- [ ]  Fidelity guard: never emit unless `structuralEquivalence === 1`; fail-closed to original
+
+- [ ]  Wired into `file context-budget.ts` `retrievalWithBudget()` as densify-before-evict (display/transport-only, DB rows unmutated)
+
+- [ ]  Flag `MEMORY_DENSIFY` default on for `episode_document` + `open_loop`
+
+- [ ]  Live re-measure reproduces ≥\~13% aggregate, fidelity 1.000, &lt;1ms/item; CI regression guard added
+
+---
+
+### ✅ \[MEM-202\] Embedding Model Selection — Superseded
+
+**Status:** ✅ Done 2026-03-29 · Superseded 2026-05-29
 **Priority:** P2 (Medium)
 **Effort:** Low (1 day)
 **Tags:** `performance`, `embeddings`
-**Files:** `scripts/embedding-benchmark.ts`
 
-**Implemented:**
-- `benchmarkModel()` — measures embed latency, throughput (dims/s), and recall@5 for any Ollama embedding model
-- `compareModels()` — runs all configured models and ranks by speed/quality
-- `MODELS` registry: nomic-embed-text (768d), mxbai-embed-large (1024d), all-MiniLM-L6-v2 (384d)
-- `set-default` — writes `ZO_EMBEDDING_MODEL` to `~/.zo/memory/.env` for persistent config
-- Ground truth: uses actual DB FTS queries as relevance proxy for benchmarking
-- CLI: `compare`, `benchmark --model <name>`, `set-default --model <name>`
+**Resolution:**
+Embedding model is now locked to OpenAI `text-embedding-3-small` (1536d), routed through
+`file model-client.ts`. The local-model benchmarking tool (`file scripts/embedding-benchmark.ts`) was
+retired in the Ollama removal — Zo has no GPU, so local embedding models are no longer in scope.
+No further model-selection work is planned.
 
 ---
 
 ## Completed Work
 
-### ✅ [MEM-000] v3.2.0 Release
-**Status:** ✅ Done  
+### ✅ \[MEM-000\] v3.2.0 Release
+
+**Status:** ✅ Done
 **Completed:** 2026-03-23
 
 **Features:**
+
 - Continuation recall across facts + episodes + open loops
 - Memory gate with continuation detection
 - Procedural memory with evolution
@@ -269,40 +329,46 @@ Current scale (~1k facts) doesn't justify complexity. Revisit at 10k+ facts.
 ## Decision Log
 
 | Date | Decision | Context |
-|------|----------|---------|
+| --- | --- | --- |
 | 2026-03-27 | Adopt context budget tracking (MEM-001) | High value for swarm token optimization |
 | 2026-03-27 | Adopt recursive summarization (MEM-002) | Improves long conversation handling |
 | 2026-03-27 | Reject LLM self-directed operations (MEM-004) | Mismatched with multi-agent architecture |
 | 2026-03-27 | Reject binary working/archival split (MEM-005) | 5-tier decay is more expressive |
 | 2026-03-27 | Defer vector DB migration (MEM-201) | Current scale sufficient with SQLite |
-| 2026-04-07 | Complete model provider migration (MEM-203) | Gate, extraction, summarization, briefing on gpt-4o-mini via model-client.ts; embeddings stay local; ~$0.13/mo cost |
+| 2026-04-07 | Complete model provider migration (MEM-203) | Gate, extraction, summarization, briefing on gpt-4o-mini via model-client.ts; embeddings stay local; \~$0.13/mo cost |
 | 2026-04-07 | Defer RAG expansion unification (MEM-204) | Scripts only use embeddings (already local); cleanup, not quality impact |
+| 2026-06-17 | Adopt lossless densifier (MEM-205) | Production bench shows 13.15% lossless @ fidelity 1.000; ship structural layer only, exclude CCR per Hermes net-negative finding |
 
 ---
 
 ## Roadmap
 
 ### ✅ Q2 2026 — COMPLETE (2026-03-29)
+
 1. **✅ MEM-001** Context Budget Awareness
 2. **✅ MEM-002** Recursive Episode Summarization
 3. **✅ MEM-101** Metrics Dashboard
 
 ### ✅ Q3 2026 — COMPLETE (2026-03-29)
+
 4. **✅ MEM-003** Iterative Multi-Hop Retrieval
 5. **✅ MEM-102** Import Pipeline Enhancements (Notion, Linear, Slack, CSV)
 6. **✅ MEM-103** Memory Conflict Resolution
 
 ### ✅ Q4 2026 — COMPLETE (2026-03-29)
+
 7. **✅ MEM-104** Cross-Persona Memory Sharing
 8. **✅ MEM-105** Enhanced Knowledge Graph
 9. **✅ MEM-202** Embedding Model Evaluation
 
 ### ✅ 2026-04-07 — Model Provider Migration
+
 10. **✅ MEM-203** Provider Abstraction + gpt-4o-mini Migration
 
 ### Future
+
 - **⬜ MEM-201** Vector Database Migration (when scale requires)
-- **⬜ MEM-204** RAG Expansion Script Unification — Migrate 5 scripts in `Projects/zouroboros-rag-expansion/scripts/` from hardcoded Ollama calls to `model-client.ts` import (currently embeddings-only, low priority)
+- **⬜ MEM-204** RAG Expansion Script Unification — Migrate 5 scripts in `Projects/zouroboros-rag-expansion/scripts/` from hardcoded Ollama calls to `file model-client.ts` import (currently embeddings-only, low priority)
 
 ---
 
@@ -328,4 +394,4 @@ To mark work complete:
 
 - **MemGPT Paper**: [arXiv:2310.08560](https://ar5iv.labs.arxiv.org/html/2310.08560)
 - **MemGPT Research Notes**: See conversation archive 2026-03-27
-- **Current System Docs**: `README.md`, `SKILL.md`
+- **Current System Docs**: `file README.md`, `file SKILL.md`

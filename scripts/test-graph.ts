@@ -128,7 +128,7 @@ function testWithLinks() {
   assert(resultA.graphBoost > 0, "Fact A has graph boost (source of link)");
   assert(resultB.graphBoost > 0, "Fact B has graph boost (target of link)");
   assert(resultC.graphBoost === 0, "Fact C has no graph boost (unlinked)");
-  assert(resultB.graphBoost > resultA.graphBoost, "Target gets higher boost than source");
+  assert(resultB.graphBoost === resultA.graphBoost, "Associative link boosts source and target equally");
 
   db.close();
 }
@@ -228,7 +228,7 @@ async function testBfsPathFinding() {
 
   // BFS from A to C
   const visited = new Set<string>();
-  const queue = [{ id: idA, depth: 0 }];
+  const queue: Array<{ id: string; depth: number }> = [{ id: idA, depth: 0 }];
   visited.add(idA);
   let found = false;
   let hops = 0;
@@ -253,7 +253,7 @@ async function testBfsPathFinding() {
   insertFact(db, idOrphan, "entity.orphan", "x", "Orphan fact");
 
   const visited2 = new Set<string>();
-  const queue2 = [{ id: idA, depth: 0 }];
+  const queue2: Array<{ id: string; depth: number }> = [{ id: idA, depth: 0 }];
   visited2.add(idA);
   let found2 = false;
 
@@ -282,7 +282,7 @@ async function testBfsPathFinding() {
     adj2.get(link.target_id)!.push({ neighbor: link.source_id });
   }
   const visited3 = new Set<string>();
-  const queue3 = [{ id: idA, depth: 0 }];
+  const queue3: Array<{ id: string; depth: number }> = [{ id: idA, depth: 0 }];
   visited3.add(idA);
   let steps = 0;
   while (queue3.length > 0 && steps < 100) {

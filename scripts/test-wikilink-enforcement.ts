@@ -67,7 +67,7 @@ function createTestDb(): Database {
   // Insert known entities
   const now = Date.now();
   const nowSec = Math.floor(now / 1000);
-  for (const entity of ["project.ffb", "system.memory", "config.routing", "persona.hermes", "tool.ollama"]) {
+  for (const entity of ["project.demo", "system.memory", "config.routing", "persona.hermes", "tool.qdrant"]) {
     db.prepare(
       "INSERT INTO facts (id, persona, entity, key, value, text, category, created_at, last_accessed) VALUES (?, 'test', ?, 'status', 'active', ?, 'general', ?, ?)"
     ).run(crypto.randomUUID(), entity, `${entity} status: active`, now, nowSec);
@@ -112,11 +112,11 @@ assert(shouldExcludeFromWrapping("i.e") === true, "Excludes abbreviation i.e");
 
 console.log("\n=== Exclusion Filter: Positive Cases (should NOT exclude) ===\n");
 
-assert(shouldExcludeFromWrapping("project.ffb") === false, "Allows project.ffb (canonical entity)");
+assert(shouldExcludeFromWrapping("project.demo") === false, "Allows project.demo (canonical entity)");
 assert(shouldExcludeFromWrapping("system.memory") === false, "Allows system.memory (canonical entity)");
 assert(shouldExcludeFromWrapping("config.routing") === false, "Allows config.routing (canonical entity)");
 assert(shouldExcludeFromWrapping("persona.hermes") === false, "Allows persona.hermes (canonical entity)");
-assert(shouldExcludeFromWrapping("tool.ollama") === false, "Allows tool.ollama (canonical entity)");
+assert(shouldExcludeFromWrapping("tool.qdrant") === false, "Allows tool.qdrant (canonical entity)");
 assert(shouldExcludeFromWrapping("swarm.orchestrator") === false, "Allows swarm.orchestrator");
 assert(shouldExcludeFromWrapping("eval.pipeline") === false, "Allows eval.pipeline");
 assert(shouldExcludeFromWrapping("memory.gate") === false, "Allows memory.gate");
@@ -132,17 +132,17 @@ console.log("\n=== Auto-Correction: Known Entities (DB tier) ===\n");
 const db = createTestDb();
 
 {
-  const result = autoCorrectWikilinks("Uses project.ffb for deployment", db);
-  assert(result !== null, "Corrects known entity project.ffb");
-  assert(result?.corrected_value === "Uses [[project.ffb]] for deployment", "Wraps project.ffb in [[]]", result?.corrected_value);
+  const result = autoCorrectWikilinks("Uses project.demo for deployment", db);
+  assert(result !== null, "Corrects known entity project.demo");
+  assert(result?.corrected_value === "Uses [[project.demo]] for deployment", "Wraps project.demo in [[]]", result?.corrected_value);
   assert(result?.confidence_tier === "known", "Tier is 'known' for DB entity");
 }
 
 {
-  const result = autoCorrectWikilinks("Integrates system.memory and tool.ollama", db);
+  const result = autoCorrectWikilinks("Integrates system.memory and tool.qdrant", db);
   assert(result !== null, "Corrects multiple known entities");
   assert(
-    result?.corrected_value.includes("[[system.memory]]") && result?.corrected_value.includes("[[tool.ollama]]"),
+    Boolean(result?.corrected_value.includes("[[system.memory]]") && result?.corrected_value.includes("[[tool.qdrant]]")),
     "Both entities wrapped",
     result?.corrected_value
   );
@@ -169,15 +169,15 @@ console.log("\n=== Auto-Correction: Pattern Tier (no DB match) ===\n");
 console.log("\n=== Auto-Correction: No Double-Wrapping ===\n");
 
 {
-  const result = autoCorrectWikilinks("Already linked [[project.ffb]] here", db);
+  const result = autoCorrectWikilinks("Already linked [[project.demo]] here", db);
   assert(result === null, "No correction when already wikilinked");
 }
 
 {
-  const result = autoCorrectWikilinks("Has [[system.memory]] and tool.ollama", db);
+  const result = autoCorrectWikilinks("Has [[system.memory]] and tool.qdrant", db);
   assert(result !== null, "Corrects unwrapped while skipping wrapped");
   assert(
-    result?.corrected_value === "Has [[system.memory]] and [[tool.ollama]]",
+    result?.corrected_value === "Has [[system.memory]] and [[tool.qdrant]]",
     "Only wraps the bare entity",
     result?.corrected_value
   );
@@ -196,16 +196,16 @@ console.log("\n=== Auto-Correction: Exclusion Filter in Context ===\n");
 }
 
 {
-  const result = autoCorrectWikilinks("Visit example.com for docs about project.ffb", db);
-  assert(result !== null, "Corrects project.ffb but not example.com");
+  const result = autoCorrectWikilinks("Visit example.com for docs about project.demo", db);
+  assert(result !== null, "Corrects project.demo but not example.com");
   assert(
-    !result?.corrected_value.includes("[[example.com]]"),
+    result ? !result.corrected_value.includes("[[example.com]]") : false,
     "Does not wrap .com domain",
     result?.corrected_value
   );
   assert(
-    result?.corrected_value.includes("[[project.ffb]]"),
-    "Does wrap project.ffb",
+    Boolean(result?.corrected_value.includes("[[project.demo]]")),
+    "Does wrap project.demo",
     result?.corrected_value
   );
 }
@@ -217,15 +217,15 @@ console.log("\n=== Auto-Correction: Exclusion Filter in Context ===\n");
 console.log("\n=== Auto-Correction: Self-Entity Skip ===\n");
 
 {
-  const result = autoCorrectWikilinks("The project.ffb system uses tool.ollama", db, "project.ffb");
+  const result = autoCorrectWikilinks("The project.demo system uses tool.qdrant", db, "project.demo");
   assert(result !== null, "Still corrects other entities");
   assert(
-    !result?.corrected_value.includes("[[project.ffb]]"),
+    result ? !result.corrected_value.includes("[[project.demo]]") : false,
     "Does not wrap self-entity",
     result?.corrected_value
   );
   assert(
-    result?.corrected_value.includes("[[tool.ollama]]"),
+    Boolean(result?.corrected_value.includes("[[tool.qdrant]]")),
     "Wraps non-self entity",
     result?.corrected_value
   );
@@ -238,9 +238,9 @@ console.log("\n=== Auto-Correction: Self-Entity Skip ===\n");
 console.log("\n=== Auto-Correction: Original Value Preserved ===\n");
 
 {
-  const result = autoCorrectWikilinks("Uses project.ffb for tasks", db);
+  const result = autoCorrectWikilinks("Uses project.demo for tasks", db);
   assert(result !== null, "Correction made");
-  assert(result?.original_value === "Uses project.ffb for tasks", "Original value preserved");
+  assert(result?.original_value === "Uses project.demo for tasks", "Original value preserved");
   assert(result?.corrected_value !== result?.original_value, "Corrected value differs from original");
 }
 

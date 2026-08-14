@@ -281,12 +281,12 @@ if (import.meta.main) {
   if (filtered.length === 0 || filtered.includes("--help") || filtered.includes("-h")) {
     console.log(`Usage:
   bun vault-persona-loader.ts <persona-slug>                Load context for a persona
-  bun vault-persona-loader.ts <persona-slug> --domain ffb   Filter by knowledge domain
+  bun vault-persona-loader.ts <persona-slug> --domain jhf-trading   Filter by knowledge domain
   bun vault-persona-loader.ts --list                        List all personas with file counts
   bun vault-persona-loader.ts --all                         Show coverage for all personas
   Add --json for JSON output
 
-  Domains: ffb, jhf-trading, zouroboros, personal, infrastructure, shared`);
+  Domains: jhf-trading, zouroboros, personal, infrastructure, shared`);
     process.exit(0);
   }
 

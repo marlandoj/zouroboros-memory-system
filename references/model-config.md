@@ -22,7 +22,7 @@ ZO_MODEL_HYDE="openai:gpt-4o-mini"
 ZO_MODEL_EMBEDDING="openai:text-embedding-3-small"
 ```
 
-Values follow `provider:model` syntax. Supported providers: `ollama`, `openai`, `anthropic`.
+Values follow `provider:model` syntax. Supported providers: `openai`, `anthropic`, `openrouter`.
 
 ## Provider secrets
 
@@ -30,7 +30,7 @@ Provider credentials come from process environment:
 
 - `OPENAI_API_KEY` — required when any `ZO_MODEL_*` uses `openai:...`
 - `ANTHROPIC_API_KEY` — required when any `ZO_MODEL_*` uses `anthropic:...`
-- `OLLAMA_URL` is only needed if you intentionally override a workload back to `ollama:...`
+- `OPENROUTER_API_KEY` — required when any `ZO_MODEL_*` uses `openrouter:...`
 
 ### Deployment note for `memory-gate` service
 
@@ -50,7 +50,7 @@ update_user_service({
 
 Omitting a key here causes `openaiGenerate()` or `openaiEmbeddings()` to throw at request
 time. The current default configuration is OpenAI-first and does not silently fall back
-to Ollama.
+to any local model — there is no GPU on Zo, so local model providers are out of scope.
 
 ## Fallback behavior
 

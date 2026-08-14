@@ -8,7 +8,7 @@
  *
  * Usage:
  *   bun multi-hop.ts retrieve --query "What decisions led to our database choice?" --maxHops 3
- *   bun multi-hop.ts benchmark --query "FFB hosting decisions"
+ *   bun multi-hop.ts benchmark --query "demo project decisions"
  *   bun multi-hop.ts explain --factId <id>
  */
 

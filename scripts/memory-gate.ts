@@ -20,7 +20,6 @@ import { extractWikilinks } from "./wikilink-utils";
 import { getPersonaDomain } from "./domain-map.ts";
 import { generateBriefing } from "./session-briefing.ts";
 import { buildCodeContext } from "./code-rag.ts";
-import { buildMimirLessonContext } from "./mimir-academy-rag.ts";
 import { logGateDecision } from "./scorecard.ts";
 
 const MEMORY_SCRIPT = "/home/workspace/Skills/zo-memory-system/scripts/memory.ts";
@@ -205,22 +204,12 @@ export async function injectSessionBriefing(personaSlug: string): Promise<string
     // Code-RAG enrichment (read-only, non-fatal): surface real source paths from
     // the codebase-memory graph relevant to the current work focus. Degrades to
     // silently omitting the block if the graph is unreachable — never throws.
+    const seed = [result.one_thing, ...result.active_items].join(" ");
     try {
-      const seed = [result.one_thing, ...result.active_items].join(" ");
       const codeBlock = await buildCodeContext(seed);
       if (codeBlock) parts.push(codeBlock);
     } catch {
       /* graph unreachable — omit block */
-    }
-
-    // Mimir Academy enrichment: lesson-relevant code context for Mimir persona
-    if (personaSlug.toLowerCase().includes("mimir")) {
-      try {
-        const mimirBlock = await buildMimirLessonContext(seed);
-        if (mimirBlock) parts.push(mimirBlock);
-      } catch {
-        /* graph unreachable — omit block */
-      }
     }
 
     return parts.join("\n");

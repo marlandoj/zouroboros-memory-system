@@ -42,8 +42,6 @@ const EXTRA_INCLUDE_GLOBS = [
 ];
 
 const PERSONA_MAP: Record<string, string[]> = {
-  "Projects/ffb/": ["ffb-marketing", "ffb-support", "ffb-ops", "ffb-engineering"],
-  "Notes/FFB_Canon/": ["ffb-marketing", "ffb-ops"],
   "Skills/alpaca-trading-skill/": ["financial-advisor", "trading-strategist"],
   "Skills/alphavantage-skill/": ["financial-advisor"],
   "Skills/backtesting-skill/": ["financial-advisor", "trading-strategist"],

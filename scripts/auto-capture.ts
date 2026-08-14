@@ -9,7 +9,7 @@
  * Usage:
  *   bun auto-capture.ts --input conversation.md --dry-run
  *   bun auto-capture.ts --input conversation.md --source "chat:2026-03-04"
- *   cat output.md | bun auto-capture.ts --source "swarm:ffb"
+ *   cat output.md | bun auto-capture.ts --source "swarm:demo"
  *   bun auto-capture.ts stats
  */
 
@@ -31,6 +31,7 @@ const DB_PATH = process.env.ZO_MEMORY_DB || "/home/workspace/.zo/memory/shared-f
 const EMBEDDING_MODEL = process.env.ZO_EMBEDDING_MODEL || "text-embedding-3-small";
 const CAPTURE_MODEL = process.env.ZO_CAPTURE_MODEL || "openai:gpt-4o-mini";
 const CAPTURE_FALLBACK_MODEL = process.env.ZO_CAPTURE_FALLBACK_MODEL || process.env.ZO_MODEL_CAPTURE || "openai:gpt-4o-mini";
+const WORKSPACES_DIR = "/home/.z/workspaces";
 const MAX_FACTS_PER_CAPTURE = 20;
 const MIN_CONFIDENCE = 0.6;
 const MIN_VALUE_LENGTH = 10;
@@ -124,8 +125,8 @@ Rules:
 - Assign decay_class: "permanent" for user preferences/identity, "stable" for project decisions, "active" for current tasks/sprints, "session" for today-only context
 - Assign confidence: 1.0 for explicit statements, 0.8 for strong implications, 0.6 for inferences
 - Include source_quote: the exact text from the transcript that supports this fact
-- entity format: "category.subject" (e.g., "project.ffb-site", "user", "decision.hosting", "system.model-routing")
-- WIKILINKS: Annotate entity references in the "value" field using [[entity]] syntax. This creates graph edges in the knowledge base. Use [[category.subject]] for known entities and [[new.entity]] for new ones. Example: "Switched [[project.ffb]] hosting from Vercel to [[service.aws-s3]]"
+- entity format: "category.subject" (e.g., "project.demo-site", "user", "decision.hosting", "system.model-routing")
+- WIKILINKS: Annotate entity references in the "value" field using [[entity]] syntax. This creates graph edges in the knowledge base. Use [[category.subject]] for known entities and [[new.entity]] for new ones. Example: "Switched [[project.demo]] hosting from Vercel to [[service.aws-s3]]"
 
 Output ONLY a valid JSON array of objects with these fields: entity, key, value, category, decay_class, confidence, source_quote
 If nothing worth extracting, return [].
@@ -302,6 +303,29 @@ async function runCapture(
   candidates = validateWikilinks(candidates, db);
 
   const stored: CapturedFact[] = [];
+
+  // P2-2: PII redaction and confidentiality hard-block.
+  // Auto-captured text can carry email, phone, and account numbers from
+  // transcripts — redact before storage. jnj.com content is hard-blocked
+  // per the standing J&J confidentiality rule.
+  function redactPII(text: string): string {
+    return text
+      .replace(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g, "[redacted-email]")
+      .replace(/\b(\+?1[-.]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b/g, "[redacted-phone]")
+      .replace(/\b\d{3}-\d{2}-\d{4}\b/g, "[redacted-ssn]")
+      .replace(/\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12})\b/g, "[redacted-card]");
+  }
+
+  function isConfidentialContent(text: string): boolean {
+    const CONFIDENTIAL_PATTERNS = [
+      /@its\.jnj\.com/i,
+      /@jnj\.com/i,
+      /\bjnj\.com\b/i,
+      /Johnson\s*&\s*Johnson/i,
+      /\bJ&J\b.*\bconfidential\b/i,
+    ];
+    return CONFIDENTIAL_PATTERNS.some(p => p.test(text));
+  }
   const skipped: Array<{ fact: CapturedFact; reason: string }> = [];
   let contradictions = 0;
   let linksCreated = 0;
@@ -317,6 +341,17 @@ async function runCapture(
     }
     if (fact.value.length < MIN_VALUE_LENGTH) {
       skipped.push({ fact, reason: `value too short (${fact.value.length} chars)` });
+      continue;
+    }
+
+    // P2-2: Redact PII from fact fields before storage
+    fact.value = redactPII(fact.value);
+    fact.entity = redactPII(fact.entity);
+    if (fact.source_quote) fact.source_quote = redactPII(fact.source_quote);
+
+    // P2-2: Hard-block J&J confidential content from memory persistence
+    if (isConfidentialContent(fact.value) || isConfidentialContent(fact.entity) || isConfidentialContent(fact.source_quote || "")) {
+      skipped.push({ fact, reason: "confidential content — blocked per J&J confidentiality rule" });
       continue;
     }
 
@@ -377,6 +412,7 @@ async function runCapture(
 
     // Parse wikilinks from value and create graph edges
     const wikilinks = extractWikilinks(fact.value);
+    let factLinksCreated = 0;
     if (wikilinks.length > 0) {
       const resolved = resolveWikilinkTargets(db, wikilinks, {
         sourcePersona: options.persona,
@@ -386,6 +422,20 @@ async function runCapture(
         db.prepare(
           "INSERT OR IGNORE INTO fact_links (source_id, target_id, relation, weight) VALUES (?, ?, 'wikilink', 1.0)"
         ).run(id, link.targetId);
+        linksCreated++;
+        factLinksCreated++;
+      }
+    }
+
+    // Same-entity fallback: if no wikilinks resolved, link to most recent same-entity peer
+    if (factLinksCreated === 0) {
+      const peer = db.prepare(
+        "SELECT id FROM facts WHERE entity = ? AND id != ? AND (expires_at IS NULL OR expires_at > ?) ORDER BY created_at DESC LIMIT 1"
+      ).get(fact.entity, id, nowSec) as any;
+      if (peer) {
+        db.prepare(
+          "INSERT OR IGNORE INTO fact_links (source_id, target_id, relation, weight) VALUES (?, ?, 'co-reference', 0.5)"
+        ).run(id, peer.id);
         linksCreated++;
       }
     }
@@ -502,7 +552,7 @@ Usage:
 
 Options:
   --input <file>       Transcript file path (or read from stdin)
-  --source <label>     Source label (e.g., "chat:2026-03-04", "swarm:ffb")
+  --source <label>     Source label (e.g., "chat:2026-03-04", "swarm:demo")
   --persona <name>     Persona to store facts under (default: "shared")
   --dry-run            Show extracted facts without storing
   --model <name>       Override extraction model (default: openai:gpt-4o-mini)
@@ -510,7 +560,7 @@ Options:
 Examples:
   bun auto-capture.ts --input conversation.md --dry-run
   bun auto-capture.ts --input conversation.md --source "chat:daily"
-  cat swarm-output.md | bun auto-capture.ts --source "swarm:ffb"
+  cat swarm-output.md | bun auto-capture.ts --source "swarm:demo"
   bun auto-capture.ts stats
 `);
 }

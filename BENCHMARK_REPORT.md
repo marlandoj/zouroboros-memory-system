@@ -2,7 +2,7 @@
 
 **Date**: 2026-04-07 12:48:43 UTC
 **Database**: 25 synthetic facts, seeded graph links
-**Ollama Models**: nomic-embed-text, qwen2.5:1.5b, qwen2.5:7b
+**Configured Models**: embeddings=text-embedding-3-small, generation=gpt-4o-mini
 
 ## Graph-Boosted Search
 

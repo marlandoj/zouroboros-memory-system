@@ -567,7 +567,7 @@ Examples:
   bun louvain.ts detect
   bun louvain.ts show --community 0
   bun louvain.ts fact --id abc123
-  bun louvain.ts entity --name "project.ffb"
+  bun louvain.ts entity --name "project.demo"
 `);
 }
 

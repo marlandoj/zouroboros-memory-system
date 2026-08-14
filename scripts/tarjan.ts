@@ -232,7 +232,7 @@ Options:
 Examples:
   bun tarjan.ts analyze
   bun tarjan.ts check --id abc123
-  bun tarjan.ts entity --name "project.ffb-site"
+  bun tarjan.ts entity --name "project.demo-site"
 `);
 }
 

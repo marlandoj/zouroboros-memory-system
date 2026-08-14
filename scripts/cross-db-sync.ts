@@ -1,13 +1,12 @@
 #!/usr/bin/env bun
 /**
- * cross-db-sync.ts — Cross-DB fact promotion (Alaric → Mimir)
+ * cross-db-sync.ts — Cross-DB fact promotion
  *
  * Syncs high-confidence facts from a source DB to a target DB.
  * Deduplicates by (entity, key, value) to avoid double-inserts.
  * Tags synced facts with source origin for traceability.
  *
  * Usage:
- *   bun cross-db-sync.ts                          # run sync (default: alaric → mimir, last 24h)
  *   bun cross-db-sync.ts --lookback 7d            # sync last 7 days
  *   bun cross-db-sync.ts --lookback 30d           # sync last 30 days
  *   bun cross-db-sync.ts --all                    # sync all facts (no time filter)
@@ -25,7 +24,6 @@ import { appendFileSync } from "fs";
 const LOG_PATH = "/dev/shm/cross-db-sync.log";
 
 const DEFAULT_SOURCE = "/home/workspace/.zo/memory/shared-facts.db";
-const DEFAULT_TARGET = "/home/workspace/.zo/memory/mimir.db";
 const DEFAULT_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_MIN_CONFIDENCE = 0.7;
 const MAX_SYNC_PER_RUN = 100;
@@ -81,7 +79,7 @@ Usage:
 
 Options:
   --source <path>          Source DB (default: shared-facts.db / alaric)
-  --target <path>          Target DB (default: mimir.db)
+  --target <path>          Target DB (required)
   --lookback <duration>    Time window: 24h, 7d, 30d (default: 24h)
   --all                    Sync all facts regardless of age
   --min-confidence <n>     Minimum confidence threshold (default: 0.7)
@@ -94,7 +92,7 @@ Options:
   }
 
   const sourcePath = args.includes("--source") ? args[args.indexOf("--source") + 1] : DEFAULT_SOURCE;
-  const targetPath = args.includes("--target") ? args[args.indexOf("--target") + 1] : DEFAULT_TARGET;
+  const targetPath = args.includes("--target") ? args[args.indexOf("--target") + 1] : undefined;
   const dryRun = args.includes("--dry-run");
   const verbose = args.includes("--verbose");
   const syncAll = args.includes("--all");
@@ -109,6 +107,10 @@ Options:
 
   if (!existsSync(sourcePath)) {
     log(`ERROR: Source DB not found: ${sourcePath}`);
+    process.exit(1);
+  }
+  if (!targetPath) {
+    log("ERROR: --target is required; Mimir's retired archive is never a default write target");
     process.exit(1);
   }
   if (!existsSync(targetPath)) {

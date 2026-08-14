@@ -28,9 +28,6 @@ function assert(condition: boolean, name: string) {
 console.log("\n=== Domain Classifier Tests ===");
 
 const domainTests: [string, Domain][] = [
-  ["Skills/ffb-hub/SKILL.md", "ffb"],
-  ["Notes/FFB_Canon/FFB_SKU_CANON.md", "ffb"],
-  ["fauna-flora-store/client/src/App.tsx", "ffb"],
   ["Projects/jhf-trading-platform/server/index.ts", "jhf-trading"],
   ["Skills/backtesting-skill/scripts/backtest.ts", "jhf-trading"],
   ["Skills/alpaca-trading-skill/SKILL.md", "jhf-trading"],
@@ -50,7 +47,7 @@ for (const [path, expected] of domainTests) {
   assert(result === expected, `classifyDomain("${path}") = "${result}" (expected "${expected}")`);
 }
 
-assert(DOMAIN_RULES.length >= 5, `DOMAIN_RULES has ${DOMAIN_RULES.length} rules (expected ≥5)`);
+assert(DOMAIN_RULES.length >= 4, `DOMAIN_RULES has ${DOMAIN_RULES.length} rules (expected ≥4)`);
 
 // ── Test 2: Session Briefing ───────────────────────────────────────────────
 
@@ -92,7 +89,7 @@ const specCases: [string, boolean][] = [
   ["Update Skills/notebooklm-skill/scripts/nlm.py to add load-channel command.", true],
   ["Run nlm_ask_query() to verify Step 0 cited_text.", true],
   ["Investigate slowness in fetchUserData() — see #142.", true],
-  ["Continue working on the FFB project.", false],
+  ["Continue working on the marketing project.", false],
   ["Review the trading bot.", false],
   ["What would you like to work on?", true],
   ["", true],
@@ -168,14 +165,14 @@ console.log("\n=== Domain Map Tests ===");
 assert(getPersonaDomain("financial-advisor") === "jhf-trading", "financial-advisor → jhf-trading");
 assert(getPersonaDomain("alaric") === "personal", "alaric → personal");
 assert(getPersonaDomain("devops-automator") === "infrastructure", "devops-automator → infrastructure");
-assert(getPersonaDomain("brand-guardian") === "ffb", "brand-guardian → ffb");
+assert(getPersonaDomain("brand-guardian") === "shared", "brand-guardian → shared");
 assert(getPersonaDomain("nonexistent-persona") === "shared", "unknown persona → shared");
 
 const financePersonas = getPersonasForDomain("jhf-trading");
 assert(financePersonas.includes("financial-advisor"), "jhf-trading domain includes financial-advisor");
 assert(financePersonas.length >= 9, `jhf-trading has ≥9 personas (got ${financePersonas.length})`);
 
-assert(DEFAULT_POOLS.length === 5, `DEFAULT_POOLS has 5 pools (got ${DEFAULT_POOLS.length})`);
+assert(DEFAULT_POOLS.length === 4, `DEFAULT_POOLS has 4 pools (got ${DEFAULT_POOLS.length})`);
 assert(DEFAULT_POOLS.some(p => p.name === "engineering"), "DEFAULT_POOLS includes engineering");
 assert(DEFAULT_POOLS.some(p => p.name === "finance"), "DEFAULT_POOLS includes finance");
 

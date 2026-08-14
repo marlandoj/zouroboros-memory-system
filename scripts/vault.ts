@@ -25,8 +25,8 @@ const SCRIPTS_DIR = dirname(new URL(import.meta.url).pathname);
 
 // Archive directories excluded from orphan metric — standalone deliverables by design
 const ARCHIVE_DIRS = [
-  "Audits", "Articles", "BrandDesignPack", "Documents", "FFBSourceFiles",
-  "FFB_Photos", "FFB_Canon", "Images", "Audio", "IDENTITY", "Fauna&Flora",
+  "Audits", "Articles", "BrandDesignPack", "Documents",
+  "Images", "Audio", "IDENTITY",
   "Infrastructure", "Backups", "Archive", "Trash",
 ];
 
@@ -568,9 +568,18 @@ if (flags.help && !sub) {
     cmdOrphans();
   } else if (sub2 === "path") {
     cmdPath();
+  } else if (sub2 === "hybrid" || sub2 === "semantic") {
+    const queryText = cleanPositional.slice(2).join(" ");
+    const flag = sub2 === "hybrid" ? "--hybrid" : "--semantic";
+    const proc = Bun.spawnSync({
+      cmd: ["bun", "/home/workspace/zouroboros/packages/rag/scripts/vault-hybrid.ts", "query", flag, queryText],
+      stdout: "inherit",
+      stderr: "inherit",
+    });
+    process.exit(proc.exitCode ?? 0);
   } else {
     console.error(`Unknown query subcommand: ${sub2 || "(none)"}`);
-    console.error("Available: backlinks, neighbors, orphans, path");
+    console.error("Available: backlinks, neighbors, orphans, path, hybrid, semantic");
     process.exit(1);
   }
 } else if (sub === "stats") {

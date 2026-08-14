@@ -8,14 +8,16 @@
 
 import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync } from "fs";
+import { dirname } from "node:path";
 
-const DB_PATH = "/home/workspace/.zo/memory/scorecard.db";
-const DB_DIR = "/home/workspace/.zo/memory";
+const DEFAULT_DB_PATH = "/home/workspace/.zo/memory/scorecard.db";
 
 function getDb(): Database | null {
   try {
-    if (!existsSync(DB_DIR)) mkdirSync(DB_DIR, { recursive: true });
-    const db = new Database(DB_PATH);
+    const dbPath = process.env.ZO_SCORECARD_DB || DEFAULT_DB_PATH;
+    const dbDir = dirname(dbPath);
+    if (!existsSync(dbDir)) mkdirSync(dbDir, { recursive: true });
+    const db = new Database(dbPath);
     db.run("PRAGMA journal_mode=WAL");
     db.run(`CREATE TABLE IF NOT EXISTS gate_decisions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

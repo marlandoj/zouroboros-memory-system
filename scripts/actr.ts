@@ -47,6 +47,7 @@ export interface ActrActivation {
   factId: string;
   entity: string;
   key: string | null;
+  value: string;
   baseLevel: number;      // B_i in ACT-R
   spreading: number;      // S_i from linked items
   total: number;          // A_i = B_i + S_i
@@ -228,6 +229,7 @@ export function calculateActivations(
       factId: row.id,
       entity: row.entity,
       key: row.key,
+      value: row.value,
       baseLevel,
       spreading: 0,
       total: baseLevel,
@@ -370,6 +372,7 @@ export function getActivation(
     factId: row.id,
     entity: row.entity,
     key: row.key,
+    value: row.value,
     baseLevel,
     spreading,
     total,

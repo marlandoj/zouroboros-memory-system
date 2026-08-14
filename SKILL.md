@@ -1,7 +1,7 @@
 ---
 name: zo-memory-system
-description: Hybrid SQLite + Vector persona memory system for Zo Computer. Episodic memory with temporal queries, graph-boosted search, BFS path finding, knowledge gap analysis, auto-capture pipeline, and per-workload model routing. Default generation workloads use OpenAI `gpt-4o-mini`; embeddings default to Ollama `nomic-embed-text`.
-compatibility: Created for Zo Computer. Requires Bun, `OPENAI_API_KEY` for default generation workloads, and Ollama for default local embeddings.
+description: Hybrid SQLite + Vector persona memory system for Zo Computer. Episodic memory with temporal queries, graph-boosted search, BFS path finding, knowledge gap analysis, auto-capture pipeline, and per-workload model routing. Default generation workloads use OpenAI `gpt-4o-mini`; embeddings use OpenAI `text-embedding-3-small`.
+compatibility: Created for Zo Computer. Requires Bun and `OPENAI_API_KEY` for generation workloads and embeddings.
 metadata:
   author: marlandoj.zo.computer
   updated: 2026-03-29
@@ -14,7 +14,7 @@ metadata:
 
 Give your Zo personas persistent memory with semantic understanding, graph intelligence, and automatic fact capture.
 
-**v4.0 Updates (Q2-Q4 2026):** Context budget awareness (token tracking + proactive checkpointing), recursive episode summarization (model-routed FIFO compression), metrics dashboard (latency/recall/capture/gate stats), iterative multi-hop retrieval (confidence-based BFS with query refinement), cross-persona memory sharing (pools + inheritance hierarchy), conflict resolution (semantic/temporal detection + provenance tracking), enhanced knowledge graph (typed relations, cycle detection, DOT export, co-occurrence inference), embedding model benchmarking (3-model comparison + recall measurement).
+**v4.0 Updates (Q2-Q4 2026):** Context budget awareness (token tracking + proactive checkpointing), recursive episode summarization (model-routed FIFO compression), metrics dashboard (latency/recall/capture/gate stats), iterative multi-hop retrieval (confidence-based BFS with query refinement), cross-persona memory sharing (pools + inheritance hierarchy), conflict resolution (semantic/temporal detection + provenance tracking), enhanced knowledge graph (typed relations, cycle detection, DOT export, co-occurrence inference).
 
 **v3.2 Updates:** Procedural memory (versioned workflow patterns with model-routed evolution), cognitive profiles (executor failure patterns + entity affinities), orchestrator integration (6-signal composite routing with procedure + temporal scoring, auto-episode creation after swarm runs)
 
@@ -47,7 +47,7 @@ Give your Zo personas persistent memory with semantic understanding, graph intel
 - **Scheduled capture agent** — Daily agent that runs conversation-capture and emails a maintenance report
 - **Contradiction detection** — New facts that conflict with existing ones create supersession links
 - **5-tier adaptive decay** — Automatic promotion/demotion based on access patterns
-- **Local embeddings** — nomic-embed-text (768d) via Ollama (no API costs)
+- **Embeddings** — OpenAI `text-embedding-3-small` (1536d) via `model-client`
 - **Per-persona memory files** — Critical facts always loaded with the persona
 - **Shared memory database** — Cross-persona facts with vector index
 - **Associative routing** — Graph links between related facts (link/unlink/show commands)
@@ -67,13 +67,8 @@ Give your Zo personas persistent memory with semantic understanding, graph intel
 ## Prerequisites
 
 ```bash
-# Default generation workloads
+# Generation workloads + embeddings
 export OPENAI_API_KEY="your_api_key_here"
-
-# Optional local embeddings
-curl -fsSL https://ollama.com/install.sh | sh
-ollama pull nomic-embed-text
-ollama serve &
 ```
 
 ### Model Selection
@@ -81,7 +76,7 @@ ollama serve &
 | Model | Purpose | Size | Why |
 |-------|---------|------|-----|
 | `openai:gpt-4o-mini` | Gate, HyDE, capture, briefing, summarization | OpenAI | Current default generation path across memory workloads |
-| `ollama:nomic-embed-text` | Vector embeddings | Ollama | Local embeddings with no per-call API cost |
+| `openai:text-embedding-3-small` | Vector embeddings | OpenAI | 1536d embeddings via `model-client` |
 
 **Override policy:** generation workloads resolve through `scripts/model-client.ts` and can be changed via workload-specific env vars.
 
@@ -158,6 +153,8 @@ bun scripts/memory.ts hybrid "database decision rationale"
 bun scripts/memory.ts hybrid "why did we pick SQLite" --no-hyde  # Skip HyDE for speed
 ```
 
+This is the specialized implementation of the ecosystem `memory` retrieval profile. The profile name standardizes caller intent; it does not replace this system's FTS/vector fusion, graph boost, confidence/freshness scoring, or supersession suppression with generic Qdrant retrieval.
+
 Hybrid search now includes graph-boosted scoring. When facts are linked via `fact_links`, linked results boost each other. Scoring weights:
 
 | Signal | Weight | Notes |
@@ -185,7 +182,7 @@ bun scripts/memory.ts lookup --entity "user" --key "name"
 # View statistics (shows embeddings count, model config)
 bun scripts/memory.ts stats
 
-# Check Ollama health and model availability
+# Check provider health and model availability
 bun scripts/memory.ts health
 
 # Backfill embeddings for all facts
@@ -672,7 +669,7 @@ bun scripts/memory-gate.ts "update the supplier scorecard"
 | Code | Meaning |
 |------|---------|
 | 0 | Memory results found and printed |
-| 1 | Error (Ollama down, parse failure) |
+| 1 | Error (provider unreachable, parse failure) |
 | 2 | No memory needed (greeting, general knowledge, self-contained request) |
 | 3 | Memory needed but no results found |
 
@@ -691,10 +688,9 @@ Run: bun /home/workspace/Skills/zo-memory-system/scripts/memory-gate.ts "<messag
 
 ```bash
 export ZO_GATE_MODEL="openai:gpt-4o-mini"  # Default gate model
-export OLLAMA_URL="http://localhost:11434"
 ```
 
-The gate uses `keep_alive: "24h"` to keep the model loaded in memory. A daily scheduled agent should ping the model to prevent cold starts (~35-58s on first load vs ~5-7s warm).
+The gate routes through `model-client.ts`, so it inherits the OpenAI defaults and per-workload overrides.
 
 ### Performance in multi-agent swarms
 
@@ -749,7 +745,7 @@ The gate is what makes this memory system viable for swarm workflows. Without ga
 Query → ┌─────────────────────────────────────┐
         │  Parallel Execution                 │
         │  ├── HyDE Expansion (default: gpt-4o-mini) │
-        │  ├── Query Embedding (nomic-embed)  │
+        │  ├── Query Embedding (text-embedding-3-small) │
         │  └── FTS5 Search (BM25)             │
         └─────────────────────────────────────┘
                         ↓
@@ -769,8 +765,7 @@ Query → ┌──────────────────────�
 Environment variables (optional):
 
 ```bash
-export OLLAMA_URL="http://localhost:11434"      # Default embedding endpoint
-export ZO_EMBEDDING_MODEL="ollama:nomic-embed-text"    # Default
+export ZO_EMBEDDING_MODEL="openai:text-embedding-3-small"  # Default
 export ZO_HYDE_MODEL="openai:gpt-4o-mini"       # Default
 export ZO_HYDE_DEFAULT="true"                   # Default: use HyDE
 export ZO_CAPTURE_MODEL="openai:gpt-4o-mini"    # Default: auto-capture model
@@ -796,16 +791,16 @@ bun scripts/test-capture.ts
 
 | Version | Date | Changes |
 |---------|------|---------|
-| 4.0.0 | 2026-03-29 | Context budget awareness (token tracking + proactive checkpointing), recursive episode summarization (Ollama-powered FIFO compression), metrics dashboard (latency/recall/capture/gate stats), iterative multi-hop retrieval (confidence-based BFS with query refinement), cross-persona memory sharing (pools + inheritance hierarchy), conflict resolution (semantic/temporal detection + provenance tracking), enhanced knowledge graph (typed relations, cycle detection, DOT export, co-occurrence inference), embedding model benchmarking (3-model comparison + recall measurement). |
+| 4.0.0 | 2026-03-29 | Context budget awareness (token tracking + proactive checkpointing), recursive episode summarization (FIFO compression (migrated from Ollama to OpenAI gpt-4o-mini in v4.3.0)), metrics dashboard (latency/recall/capture/gate stats), iterative multi-hop retrieval (confidence-based BFS with query refinement), cross-persona memory sharing (pools + inheritance hierarchy), conflict resolution (semantic/temporal detection + provenance tracking), enhanced knowledge graph (typed relations, cycle detection, DOT export, co-occurrence inference), embedding model benchmarking (3-model comparison + recall measurement). |
 | 3.3.1 | 2026-03-07 | HTTP MCP server (`mcp-server-http.ts`) — Streamable HTTP transport via Bun.serve(), registered as Zo hosted service (`svc_PXkgBzRdH8M`), HTTPS at `zo-memory-mcp-marlandoj.zocomputer.io`, configured in Claude Code / Gemini / Codex / workspace .mcp.json, bridge script updated with zo-memory tool permissions |
 | 3.3.0 | 2026-03-07 | Conversation capture (conversation-capture.ts) — scan all workspace artifacts for fact extraction, not just swarm. Scheduled daily agent for automatic capture + maintenance reports. Memory Manager persona with full CLI access. |
-| 3.2.0 | 2026-03-07 | Procedural memory (versioned workflow storage, CRUD, feedback, Ollama evolution), cognitive profiles (episode IDs, failure patterns, entity affinities in executor-history.json), orchestrator v4.5 integration (auto-episode on swarm completion, 6-signal composite routing with procedure + temporal scores), MCP server (5 tools: search, store, episodes, procedures, cognitive_profile), import pipeline (ChatGPT, Obsidian, markdown), enhanced CLI (profile, import, mcp commands) |
+| 3.2.0 | 2026-03-07 | Procedural memory (versioned workflow storage, CRUD, feedback, LLM evolution (migrated from Ollama to OpenAI in v4.3.0)), cognitive profiles (episode IDs, failure patterns, entity affinities in executor-history.json), orchestrator v4.5 integration (auto-episode on swarm completion, 6-signal composite routing with procedure + temporal scores), MCP server (5 tools: search, store, episodes, procedures, cognitive_profile), import pipeline (ChatGPT, Obsidian, markdown), enhanced CLI (profile, import, mcp commands) |
 | 3.1.0 | 2026-03-07 | Episodic memory (episodes table, entity tagging, temporal queries), velocity trends, DB migration system (migrate/rollback), auto-capture episode hook, stats v3 with episode/procedure counts |
 | 3.0.0 | 2026-03-04 | Graph-boosted hybrid search (graph-boost.ts), BFS path finding & knowledge gap analysis (graph.ts), auto-capture pipeline (auto-capture.ts), co-capture linking, contradiction detection, scoring redistribution (RRF 0.60 + Graph 0.15 + Freshness 0.15 + Confidence 0.10) |
 | 2.3.0 | 2026-03-03 | Memory gate (memory-gate.ts), always-on context injection via Zo rules, 24h model keep-alive, gate-filtered token savings for swarm workflows |
-| 2.2.0 | 2026-02-27 | Ollama health check, fetch timeouts, prune/decay/consolidate/link/graph commands, vector pre-filtering, adaptive decay, associative routing, PRAGMA busy_timeout |
+| 2.2.0 | 2026-02-27 | OpenAI health check (formerly Ollama, migrated v4.3.0), fetch timeouts, prune/decay/consolidate/link/graph commands, vector pre-filtering, adaptive decay, associative routing, PRAGMA busy_timeout |
 | 2.1.0 | 2026-02-22 | Parallelized HyDE/FTS/embedding execution, optimized for qwen2.5:1.5b, performance docs |
-| 2.0.0 | 2026-02-19 | Hybrid SQLite + Vector search, HyDE query expansion, semantic retrieval, nomic-embed-text via Ollama |
+| 2.0.0 | 2026-02-19 | Hybrid SQLite + Vector search, HyDE query expansion, semantic retrieval, text-embedding-3-small via OpenAI (formerly nomic-embed-text/Ollama, migrated v4.3.0) |
 | 1.1.0 | 2026-02-18 | Added swarm v4 integration documentation |
 | 1.0.0 | 2026-02-08 | Initial release - SQLite persona memory, 5-tier decay, FTS5 search |
 

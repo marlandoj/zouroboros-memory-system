@@ -16,6 +16,8 @@
  */
 
 import { extractAndStoreFacts } from "./fact-extractor";
+import { logStore } from "./scorecard.ts";
+import { prospectiveTraceEnabled } from "./prospective-observability";
 
 const MAX_CONTEXT_TOKENS = 3000; // ~12k chars, keeps inline fast
 
@@ -101,6 +103,15 @@ async function main() {
       }
     } else {
       console.log(`[inline-capture] Stored ${result.stored.length} facts (${result.duration_ms}ms)`);
+      for (const f of result.stored) {
+        logStore({
+          persona: opts.persona,
+          entity: f.entity,
+          decayClass: f.decay_class,
+          category: f.category,
+          sessionId: prospectiveTraceEnabled() ? process.env.ZO_TRACE_ID : undefined,
+        });
+      }
     }
     process.exit(0);
   } else {

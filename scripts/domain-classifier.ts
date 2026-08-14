@@ -2,13 +2,13 @@
 /**
  * Domain Classifier (T2 — PKA Session Briefing)
  * Classifies workspace files into knowledge domains via path heuristics.
- * Domains: ffb, jhf-trading, zouroboros, personal, infrastructure, shared
+ * Domains: jhf-trading, zouroboros, personal, infrastructure, shared
  */
 
 import { Database } from "bun:sqlite";
 import { parseArgs } from "util";
 
-export type Domain = "ffb" | "jhf-trading" | "zouroboros" | "personal" | "infrastructure" | "shared";
+export type Domain = "jhf-trading" | "zouroboros" | "personal" | "infrastructure" | "shared";
 
 interface DomainRule {
   domain: Domain;
@@ -16,17 +16,6 @@ interface DomainRule {
 }
 
 export const DOMAIN_RULES: DomainRule[] = [
-  {
-    domain: "ffb",
-    patterns: [
-      /Skills\/ffb[-_]/i,
-      /Notes\/FFB[_\/]/i,
-      /fauna[-_]flora/i,
-      /FFB[A-Z_]/,
-      /Projects\/ffb\//i,
-      /FAUNA_FLORA/i,
-    ],
-  },
   {
     domain: "jhf-trading",
     patterns: [
@@ -69,7 +58,7 @@ export const DOMAIN_RULES: DomainRule[] = [
     domain: "personal",
     patterns: [
       /Documents\//i,
-      /Notes\/(?!FFB)/i,
+      /Notes\//i,
       /IDENTITY\//i,
       /Prompts\//i,
       /SOUL\.md$/i,
@@ -118,7 +107,7 @@ if (import.meta.main) {
     db.close();
 
     const counts: Record<Domain, number> = {
-      ffb: 0, "jhf-trading": 0, zouroboros: 0, personal: 0, infrastructure: 0, shared: 0,
+      "jhf-trading": 0, zouroboros: 0, personal: 0, infrastructure: 0, shared: 0,
     };
     const classified: { file_path: string; domain: Domain }[] = [];
 
