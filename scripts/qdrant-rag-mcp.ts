@@ -23,7 +23,7 @@ import {
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-type EvidenceGateMode = "off" | "annotate";
+type EvidenceGateMode = "off" | "annotate" | "enforce";
 type EvidenceGateConfig = { mode: EvidenceGateMode; minTier: string };
 type RetrievalHit = { id: string | number; score?: number; payload?: Record<string, unknown> };
 type EvidenceReadinessAnnotation = {
@@ -51,7 +51,7 @@ type EvidenceGateResult<T extends RetrievalHit> = {
     meetingThreshold: number;
     meetingThresholdRatio: number;
   };
-  synthesis: { permitted: true; labeled: boolean; reason: string };
+  synthesis: { permitted: boolean; labeled: boolean; reason: string };
 };
 type EvidenceReadinessRuntime = {
   evidenceGateConfigFromEnv: (env?: NodeJS.ProcessEnv) => EvidenceGateConfig;
@@ -287,6 +287,18 @@ export function applyAiEngineerEvidenceReadiness(
   const gate = evidenceReadinessRuntime.applyEvidenceReadinessGate(targetHits, config);
   if (gate.mode === "off") return { hits, gate };
 
+  if (gate.mode === "enforce") {
+    const qualified = new Map(
+      gate.hits.map((hit) => [`${typeof hit.id}:${String(hit.id)}`, hit] as const),
+    );
+    const filtered = hits.flatMap((hit) => {
+      if (hit.collection !== "ai-engineer-videos") return [hit];
+      const accepted = qualified.get(`${typeof hit.id}:${String(hit.id)}`);
+      return accepted ? [{ ...accepted, readinessThreshold: gate.minTier } as CollectionHit] : [];
+    });
+    return { hits: filtered, gate };
+  }
+
   const annotated = [...hits];
   targetPositions.forEach((position, targetIndex) => {
     const annotatedHit: CollectionHit = {
@@ -517,6 +529,12 @@ async function toolRagSearch(args: {
       header.push(
         `[evidence-readiness/v1] ${evidenceReadiness.gate.cohort.meetingThreshold}/${evidenceReadiness.gate.cohort.total} ai-engineer-videos hits meet ${evidenceReadiness.gate.minTier}; shadow annotation only`,
       );
+    }
+    if (evidenceReadiness.gate?.mode === "enforce") {
+      header.push(`[evidence-readiness/v1 enforce] ${evidenceReadiness.gate.synthesis.reason}`);
+      if (!evidenceReadiness.gate.synthesis.permitted && merged.length === 0) {
+        return header.join("\n");
+      }
     }
 
     const hits = merged.map((hit) => formatHit(hit, hit.collection ?? "")).join("\n\n");
