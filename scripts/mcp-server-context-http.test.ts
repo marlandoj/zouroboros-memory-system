@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
@@ -9,6 +9,7 @@ import { CONTEXT_TOOL_NAMES } from "./mcp-access-policy";
 const SCRIPT = join(import.meta.dir, "mcp-server-http.ts");
 const CONTEXT_PORT = 48531;
 const FULL_PORT = 48532;
+const MISSING_TOKEN_PORT = 48533;
 const CONTEXT_TOKEN = "context-test-token";
 const FULL_TOKEN = "full-test-token";
 const tempRoot = mkdtempSync(join(tmpdir(), "zouroboros-context-mcp-"));
@@ -26,9 +27,30 @@ function spawnServer(port: number, mode: "context" | "full") {
     ...process.env,
     PORT: String(port),
     ZO_MEMORY_DB: dbPath,
-    ZO_MEMORY_MCP_READ_ONLY: mode === "context" ? "1" : "0",
+    ZO_MEMORY_MCP_READ_ONLY: mode === "context" ? "true" : "false",
     ZOUROBOROS_CONTEXT_MCP_TOKEN: mode === "context" ? CONTEXT_TOKEN : "",
     ZO_MEMORY_MCP_TOKEN: mode === "full" ? FULL_TOKEN : "",
+  };
+  return Bun.spawn(["bun", SCRIPT], {
+    cwd: import.meta.dir,
+    env,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+}
+
+function spawnContextServerWithoutToken() {
+  const {
+    ZOUROBOROS_CONTEXT_MCP_TOKEN: _contextToken,
+    ZO_MEMORY_MCP_TOKEN: _fullToken,
+    ...inheritedEnvironment
+  } = process.env;
+  const env = {
+    ...inheritedEnvironment,
+    HOME: tempRoot,
+    PORT: String(MISSING_TOKEN_PORT),
+    ZO_MEMORY_DB: dbPath,
+    ZO_MEMORY_MCP_READ_ONLY: "true",
   };
   return Bun.spawn(["bun", SCRIPT], {
     cwd: import.meta.dir,
@@ -93,8 +115,51 @@ async function initialize(port: number, token: string): Promise<string | undefin
 
 beforeAll(async () => {
   const database = new Database(dbPath);
-  database.exec("CREATE TABLE sentinel (value TEXT NOT NULL); INSERT INTO sentinel VALUES ('unchanged')");
+  database.exec(readFileSync(join(import.meta.dir, "schema.sql"), "utf8"));
+  const now = Math.floor(Date.now() / 1000);
+  database.prepare(`
+    INSERT INTO facts (id, persona, entity, key, value, text, category, decay_class, source, created_at, last_accessed)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    "context-fact",
+    "shared",
+    "project.context-mcp",
+    "status",
+    "read path verified",
+    "context fixture searchable read path verified",
+    "project",
+    "stable",
+    "held-out-test",
+    now * 1000,
+    now,
+  );
+  database.prepare("INSERT INTO episodes (id, summary, outcome, happened_at) VALUES (?, ?, ?, ?)")
+    .run("context-episode", "Context MCP read verification completed", "success", now);
+  database.prepare("INSERT INTO episode_entities (episode_id, entity) VALUES (?, ?)")
+    .run("context-episode", "project.context-mcp");
+  database.prepare(`
+    INSERT INTO procedures (id, name, version, steps, success_count, failure_count)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(
+    "context-procedure",
+    "context-read-verification",
+    1,
+    JSON.stringify([{ executor: "codex", taskPattern: "verify context reads", timeoutSeconds: 60 }]),
+    1,
+    0,
+  );
   database.close();
+  mkdirSync(join(tempRoot, ".swarm"), { recursive: true });
+  writeFileSync(join(tempRoot, ".swarm", "executor-history.json"), JSON.stringify({
+    "codex:verification": {
+      attempts: 1,
+      successes: 1,
+      avgDurationMs: 1000,
+      recent_episode_ids: ["context-episode"],
+      failure_patterns: [],
+      entity_affinities: { "project.context-mcp": 1 },
+    },
+  }));
   contextProcess = spawnServer(CONTEXT_PORT, "context");
   fullProcess = spawnServer(FULL_PORT, "full");
   await Promise.all([waitForHealth(CONTEXT_PORT), waitForHealth(FULL_PORT)]);
@@ -108,7 +173,7 @@ afterAll(async () => {
 });
 
 describe("HTTP memory MCP access isolation", () => {
-  test("fails closed without the context credential", async () => {
+  test("rejects a request without an Authorization header", async () => {
     const response = await fetch(`http://127.0.0.1:${CONTEXT_PORT}/mcp`, {
       method: "POST",
       headers: {
@@ -117,6 +182,25 @@ describe("HTTP memory MCP access isolation", () => {
       },
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }),
     });
+    expect(response.status).toBe(401);
+  });
+
+  test("refuses to start when the context server credential is absent", async () => {
+    const process = spawnContextServerWithoutToken();
+    const stderrPromise = new Response(process.stderr).text();
+    const exitCode = await process.exited;
+    const stderr = await stderrPromise;
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("ZOUROBOROS_CONTEXT_MCP_TOKEN is required");
+    await expect(fetch(`http://127.0.0.1:${MISSING_TOKEN_PORT}/health`)).rejects.toThrow();
+  });
+
+  test("rejects an incorrect or retired credential", async () => {
+    const { response } = await mcpRequest(
+      CONTEXT_PORT,
+      "retired-legacy-token",
+      { jsonrpc: "2.0", id: 10, method: "initialize", params: {} },
+    );
     expect(response.status).toBe(401);
   });
 
@@ -151,6 +235,30 @@ describe("HTTP memory MCP access isolation", () => {
     );
     expect(payload.result.isError).toBeTrue();
     expect(payload.result.content[0].text).toContain("not available in context mode");
+    expect(databaseDigest()).toBe(before);
+  });
+
+  test("all approved context tools execute successfully without changing SQLite", async () => {
+    const before = databaseDigest();
+    const calls = [
+      { name: "memory_search", arguments: { query: "context" }, expected: "read path verified" },
+      { name: "memory_episodes", arguments: { entity: "project.context-mcp" }, expected: "Context MCP read verification completed" },
+      { name: "memory_procedures", arguments: { name: "context-read-verification" }, expected: "Procedure: context-read-verification v1" },
+      { name: "cognitive_profile", arguments: { executor_id: "codex" }, expected: "Cognitive profile for codex" },
+    ];
+
+    for (const [index, call] of calls.entries()) {
+      const { response, payload } = await mcpRequest(CONTEXT_PORT, CONTEXT_TOKEN, {
+        jsonrpc: "2.0",
+        id: 20 + index,
+        method: "tools/call",
+        params: { name: call.name, arguments: call.arguments },
+      });
+      expect(response.status).toBe(200);
+      expect(payload.result.isError).not.toBeTrue();
+      expect(payload.result.content[0].text).toContain(call.expected);
+    }
+
     expect(databaseDigest()).toBe(before);
   });
 

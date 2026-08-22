@@ -22,11 +22,12 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { Database, type SQLQueryBindings } from "bun:sqlite";
-import { randomUUID } from "crypto";
+import { randomUUID, timingSafeEqual } from "crypto";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import {
   isToolAllowed,
+  requireBearerToken,
   resolveMemoryMcpAccessMode,
   selectExposedTools,
   tokenEnvironmentName,
@@ -40,7 +41,7 @@ const EMBEDDING_MODEL = process.env.ZO_EMBEDDING_MODEL || "text-embedding-3-smal
 const HISTORY_PATH = join(process.env.HOME || "/tmp", ".swarm", "executor-history.json");
 const ACCESS_MODE = resolveMemoryMcpAccessMode(process.env);
 const TOKEN_ENV_NAME = tokenEnvironmentName(ACCESS_MODE);
-const BEARER_TOKEN = process.env[TOKEN_ENV_NAME] || "";
+const BEARER_TOKEN = requireBearerToken(process.env, ACCESS_MODE);
 
 // --- DB ---
 let db: Database;
@@ -552,22 +553,12 @@ function createSessionServer(requestedSessionId?: string): { transport: WebStand
 
 // --- Auth check ---
 function checkAuth(req: Request): boolean {
-  if (!BEARER_TOKEN) return true; // No token configured = open access (localhost only)
   const auth = req.headers.get("authorization");
   if (!auth?.startsWith("Bearer ")) return false;
   const token = auth.slice(7);
-  
-  // Transition hack: Accept current token OR the mangled one cached by the bridge
-  const MANGLED_LEGACY = "nG1&xW5#jE8@fD2(uG6)tZ1[rA3]nP0*xL7!vR4^mQ2";
-  if (token === BEARER_TOKEN || token === MANGLED_LEGACY) return true;
-
-  // Constant-time fallback for security
-  if (token.length !== BEARER_TOKEN.length) return false;
-  let mismatch = 0;
-  for (let i = 0; i < token.length; i++) {
-    mismatch |= token.charCodeAt(i) ^ BEARER_TOKEN.charCodeAt(i);
-  }
-  return mismatch === 0;
+  const tokenBytes = Buffer.from(token);
+  const expectedBytes = Buffer.from(BEARER_TOKEN);
+  return tokenBytes.length === expectedBytes.length && timingSafeEqual(tokenBytes, expectedBytes);
 }
 
 // --- Bun HTTP server ---
@@ -633,5 +624,5 @@ const server = Bun.serve({
 console.error(`[zo-memory-mcp] HTTP MCP server running on http://127.0.0.1:${PORT}/mcp`);
 console.error(`[zo-memory-mcp] Health check: http://127.0.0.1:${PORT}/health`);
 console.error(`[zo-memory-mcp] Access mode: ${ACCESS_MODE}`);
-console.error(`[zo-memory-mcp] Auth: ${BEARER_TOKEN ? `Bearer token required via ${TOKEN_ENV_NAME}` : `Denied: ${TOKEN_ENV_NAME} is not configured`}`);
+console.error(`[zo-memory-mcp] Auth: Bearer token required via ${TOKEN_ENV_NAME}`);
 console.error(`[zo-memory-mcp] DB: ${DB_PATH}`);
