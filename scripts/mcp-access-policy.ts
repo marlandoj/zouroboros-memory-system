@@ -27,4 +27,3 @@ export function selectExposedTools<T extends { name: string }>(
 export function isToolAllowed(name: string, mode: MemoryMcpAccessMode): boolean {
   return mode === "full" || CONTEXT_TOOL_SET.has(name);
 }
-
