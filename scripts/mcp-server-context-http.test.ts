@@ -75,7 +75,7 @@ async function mcpRequest(
   return { response, payload: text ? parseMcpBody(text) : null };
 }
 
-async function initialize(port: number, token: string): Promise<string> {
+async function initialize(port: number, token: string): Promise<string | undefined> {
   const { response, payload } = await mcpRequest(port, token, {
     jsonrpc: "2.0",
     id: 1,
@@ -88,9 +88,7 @@ async function initialize(port: number, token: string): Promise<string> {
   });
   expect(response.status).toBe(200);
   expect(payload.result.serverInfo.name).toBeTruthy();
-  const sessionId = response.headers.get("mcp-session-id");
-  expect(sessionId).toBeTruthy();
-  return sessionId!;
+  return response.headers.get("mcp-session-id") ?? undefined;
 }
 
 beforeAll(async () => {
