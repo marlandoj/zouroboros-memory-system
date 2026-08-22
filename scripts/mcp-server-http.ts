@@ -25,6 +25,12 @@ import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { randomUUID } from "crypto";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
+import {
+  isToolAllowed,
+  resolveMemoryMcpAccessMode,
+  selectExposedTools,
+  tokenEnvironmentName,
+} from "./mcp-access-policy";
 import { embeddings as mcEmbeddings } from "./model-client";
 
 // --- Config ---
@@ -32,15 +38,18 @@ const PORT = parseInt(process.env.PORT || "48400");
 const DB_PATH = process.env.ZO_MEMORY_DB || "/home/workspace/.zo/memory/shared-facts.db";
 const EMBEDDING_MODEL = process.env.ZO_EMBEDDING_MODEL || "text-embedding-3-small";
 const HISTORY_PATH = join(process.env.HOME || "/tmp", ".swarm", "executor-history.json");
-const BEARER_TOKEN = process.env.ZO_MEMORY_MCP_TOKEN || "";
+const ACCESS_MODE = resolveMemoryMcpAccessMode(process.env);
+const TOKEN_ENV_NAME = tokenEnvironmentName(ACCESS_MODE);
+const BEARER_TOKEN = process.env[TOKEN_ENV_NAME] || "";
 
 // --- DB ---
 let db: Database;
 
 function getDb(): Database {
   if (!db) {
-    db = new Database(DB_PATH);
-    db.exec("PRAGMA journal_mode = WAL");
+    db = new Database(DB_PATH, ACCESS_MODE === "context" ? { readonly: true } : undefined);
+    if (ACCESS_MODE === "context") db.exec("PRAGMA query_only = ON");
+    else db.exec("PRAGMA journal_mode = WAL");
     db.exec("PRAGMA busy_timeout = 5000");
   }
   return db;
@@ -493,20 +502,28 @@ const TOOLS_DEFINITION = [
   },
 ];
 
+const EXPOSED_TOOLS = selectExposedTools(TOOLS_DEFINITION, ACCESS_MODE);
+
 // Per-session transports (stateful: each client gets its own transport+server)
 const sessions = new Map<string, { transport: WebStandardStreamableHTTPServerTransport; server: Server }>();
 
 function createSessionServer(requestedSessionId?: string): { transport: WebStandardStreamableHTTPServerTransport; server: Server } {
   const server = new Server(
-    { name: "zo-memory-system", version: "3.2.0" },
+    { name: ACCESS_MODE === "context" ? "zouroboros-context" : "zo-memory-system", version: "3.2.0" },
     { capabilities: { tools: {} } }
   );
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS_DEFINITION }));
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: EXPOSED_TOOLS }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
     try {
+      if (!isToolAllowed(name, ACCESS_MODE)) {
+        return {
+          content: [{ type: "text", text: `Tool not available in ${ACCESS_MODE} mode: ${name}` }],
+          isError: true,
+        };
+      }
       let result: string;
       switch (name) {
         case "memory_search": result = await toolMemorySearch(args as any); break;
@@ -568,7 +585,8 @@ const server = Bun.serve({
         status: dbOk ? "ok" : "degraded",
         version: "3.2.0",
         db: dbOk ? "connected" : "missing",
-        tools: TOOLS_DEFINITION.map(t => t.name),
+        accessMode: ACCESS_MODE,
+        tools: EXPOSED_TOOLS.map(t => t.name),
         sessions: sessions.size,
       }), {
         headers: { "Content-Type": "application/json" },
@@ -612,7 +630,8 @@ const server = Bun.serve({
   },
 });
 
-console.error(`[zo-memory-mcp] HTTP MCP server running on http://0.0.0.0:${PORT}/mcp`);
-console.error(`[zo-memory-mcp] Health check: http://0.0.0.0:${PORT}/health`);
-console.error(`[zo-memory-mcp] Auth: ${BEARER_TOKEN ? "Bearer token required" : "Open (no token configured)"}`);
+console.error(`[zo-memory-mcp] HTTP MCP server running on http://127.0.0.1:${PORT}/mcp`);
+console.error(`[zo-memory-mcp] Health check: http://127.0.0.1:${PORT}/health`);
+console.error(`[zo-memory-mcp] Access mode: ${ACCESS_MODE}`);
+console.error(`[zo-memory-mcp] Auth: ${BEARER_TOKEN ? `Bearer token required via ${TOKEN_ENV_NAME}` : `Denied: ${TOKEN_ENV_NAME} is not configured`}`);
 console.error(`[zo-memory-mcp] DB: ${DB_PATH}`);
