@@ -133,6 +133,7 @@ beforeAll(async () => {
     now * 1000,
     now,
   );
+  database.exec("INSERT INTO facts_fts(facts_fts) VALUES ('rebuild')");
   database.prepare("INSERT INTO episodes (id, summary, outcome, happened_at) VALUES (?, ?, ?, ?)")
     .run("context-episode", "Context MCP read verification completed", "success", now);
   database.prepare("INSERT INTO episode_entities (episode_id, entity) VALUES (?, ?)")
