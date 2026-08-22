@@ -25,6 +25,7 @@ function databaseDigest(): string {
 function spawnServer(port: number, mode: "context" | "full") {
   const env = {
     ...process.env,
+    HOME: tempRoot,
     PORT: String(port),
     ZO_MEMORY_DB: dbPath,
     ZO_MEMORY_MCP_READ_ONLY: mode === "context" ? "true" : "false",
