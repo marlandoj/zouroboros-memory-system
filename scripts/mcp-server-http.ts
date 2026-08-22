@@ -130,7 +130,7 @@ async function toolMemorySearch(args: {
   ftsWhere.push("(f.expires_at IS NULL OR f.expires_at > ?)");
   ftsParams.push(nowSec);
 
-  const ftsResults = db.prepare(`
+  let ftsResults = db.prepare(`
     SELECT f.*, fts.rank
     FROM facts_fts fts
     JOIN facts f ON f.id = fts.rowid
@@ -139,6 +139,18 @@ async function toolMemorySearch(args: {
     ORDER BY fts.rank
     LIMIT ?
   `).all(query, ...ftsParams, limit * 2) as Array<Record<string, unknown>>;
+
+  if (ftsResults.length === 0) {
+    const pattern = `%${query}%`;
+    ftsResults = db.prepare(`
+      SELECT f.*, 0 AS rank
+      FROM facts f
+      WHERE (f.text LIKE ? OR f.entity LIKE ? OR f.key LIKE ? OR f.value LIKE ?)
+        ${ftsWhere.length ? "AND " + ftsWhere.join(" AND ") : ""}
+      ORDER BY f.created_at DESC
+      LIMIT ?
+    `).all(pattern, pattern, pattern, pattern, ...ftsParams, limit * 2) as Array<Record<string, unknown>>;
+  }
 
   const queryEmbedding = await getEmbedding(query);
   let vectorResults: Array<{ id: string; score: number }> = [];
