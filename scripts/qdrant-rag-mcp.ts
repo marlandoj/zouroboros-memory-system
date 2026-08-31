@@ -147,6 +147,49 @@ const PREVIEW_CHARS = 600;
 const RERANK_CANDIDATE_MULTIPLIER = 4; // pull 4× topK candidates when reranking
 const MAX_CANDIDATES = 40;
 
+type LogicalRoute = { physical: string; filter?: Record<string, unknown> };
+
+const STATIC_ROUTES: Record<string, LogicalRoute> = {
+  "mimir-facts": { physical: "memory-facts-v1", filter: { must: [{ key: "namespace", match: { value: "mimir-facts" } }] } },
+  "shared-memory-facts": { physical: "memory-facts-v1", filter: { must: [{ key: "namespace", match: { value: "shared-memory-facts" } }] } },
+  "instincts-semantic": { physical: "memory-facts-v1", filter: { must: [{ key: "namespace", match: { value: "instincts-semantic" } }] } },
+  "jhf-knowledge": { physical: "jhf-corpus-v1", filter: { must: [{ key: "corpus_kind", match: { value: "jhf-knowledge" } }] } },
+  "jhf-research": { physical: "jhf-corpus-v1", filter: { must: [{ key: "corpus_kind", match: { value: "jhf-research" } }] } },
+  "zouroboros-research": { physical: "research-corpus-v1", filter: { must: [{ key: "corpus", match: { value: "zouroboros-research" } }] } },
+  "deep-research-corpus": { physical: "research-corpus-v1", filter: { must: [{ key: "corpus", match: { value: "deep-research-corpus" } }] } },
+};
+
+const AGENT_TARGET = "agent-memory-v1";
+const AGENT_LOGICAL_COLLECTIONS = [
+  "agent-agent-doctor-apply-2026-08-16",
+  "agent-agent-introspect",
+  "agent-jhf-bot-performance",
+  "agent-security-audit",
+  "agent-swarm-backlog",
+  "agent-weekly-adversarial-debate",
+  "agent-weekly-brain-dump",
+  "agent-zouroboros-monorepo-health",
+];
+
+function configuredRoute(name: string): LogicalRoute | undefined {
+  if (name.startsWith("agent-") && name !== AGENT_TARGET) {
+    return { physical: AGENT_TARGET, filter: { must: [{ key: "slug", match: { value: name.slice("agent-".length) } }] } };
+  }
+  return STATIC_ROUTES[name];
+}
+
+async function activeRoute(name: string): Promise<LogicalRoute> {
+  try {
+    await qGet(`/collections/${name}`);
+    return { physical: name };
+  } catch {
+    const route = configuredRoute(name);
+    if (!route) return { physical: name };
+    await qGet(`/collections/${route.physical}`);
+    return route;
+  }
+}
+
 function qHeaders(): Record<string, string> {
   const h: Record<string, string> = { "Content-Type": "application/json" };
   if (QDRANT_KEY) h["api-key"] = QDRANT_KEY;
@@ -171,12 +214,42 @@ async function qPost(path: string, body: any): Promise<any> {
 
 async function listCollections(): Promise<string[]> {
   const j = await qGet("/collections");
-  return (j.result?.collections || []).map((c: any) => c.name);
+  const physical = (j.result?.collections || []).map((c: any) => c.name as string);
+  const present = new Set(physical);
+  const groups = [
+    { target: AGENT_TARGET, logical: AGENT_LOGICAL_COLLECTIONS },
+    { target: "memory-facts-v1", logical: ["mimir-facts", "shared-memory-facts", "instincts-semantic"] },
+    { target: "jhf-corpus-v1", logical: ["jhf-knowledge", "jhf-research"] },
+    { target: "research-corpus-v1", logical: ["zouroboros-research", "deep-research-corpus"] },
+  ];
+  const targets = new Map(groups.map((group) => [group.target, group]));
+  const names: string[] = [];
+  for (const name of physical) {
+    const group = targets.get(name);
+    if (!group) {
+      names.push(name);
+      continue;
+    }
+    if (group.logical.some((logical) => present.has(logical))) continue;
+    names.push(...group.logical);
+  }
+  return [...new Set(names)];
 }
 
 async function getCollectionInfo(name: string): Promise<any> {
-  const j = await qGet(`/collections/${name}`);
+  const route = await activeRoute(name);
+  const j = await qGet(`/collections/${route.physical}`);
   return j.result;
+}
+
+async function getCollectionCount(name: string): Promise<number | string> {
+  const route = await activeRoute(name);
+  if (!route.filter) return (await getCollectionInfo(name))?.points_count ?? "?";
+  const result = await qPost(`/collections/${route.physical}/points/count`, {
+    filter: route.filter,
+    exact: true,
+  });
+  return result.result?.count ?? "?";
 }
 
 async function searchCollection(
@@ -185,6 +258,7 @@ async function searchCollection(
   limit: number,
   options?: { hybridQuery?: string },
 ): Promise<any[]> {
+  const route = await activeRoute(collection);
   const schema = await collectionSchema(collection);
   // Hybrid path: Qdrant prefetch + RRF fusion across dense + sparse.
   if (options?.hybridQuery && schema.hasNamedDense && schema.hasSparse) {
@@ -197,27 +271,30 @@ async function searchCollection(
       query: { fusion: "rrf" },
       limit,
       with_payload: true,
+      ...(route.filter ? { filter: route.filter } : {}),
     };
-    const j = await qPost(`/collections/${collection}/points/query`, body);
+    const j = await qPost(`/collections/${route.physical}/points/query`, body);
     return (j.result?.points || []).map((p: any) => ({ id: p.id, score: p.score, payload: p.payload }));
   }
   // Named-vector dense-only path (uses Query API with "using")
   if (schema.hasNamedDense) {
-    const j = await qPost(`/collections/${collection}/points/query`, {
+    const j = await qPost(`/collections/${route.physical}/points/query`, {
       query: vector,
       using: "dense",
       limit,
       with_payload: true,
+      ...(route.filter ? { filter: route.filter } : {}),
     });
     return (j.result?.points || []).map((p: any) => ({ id: p.id, score: p.score, payload: p.payload }));
   }
-  // Legacy unnamed dense path (default collection schema).
-  const j = await qPost(`/collections/${collection}/points/search`, {
-    vector,
+  // Unnamed dense path (default collection schema).
+  const j = await qPost(`/collections/${route.physical}/points/query`, {
+    query: vector,
     limit,
     with_payload: true,
+    ...(route.filter ? { filter: route.filter } : {}),
   });
-  return j.result || [];
+  return (j.result?.points || []).map((p: any) => ({ id: p.id, score: p.score, payload: p.payload }));
 }
 
 function preview(s: string | undefined, n = PREVIEW_CHARS): string {
@@ -540,7 +617,7 @@ async function toolListCollections(): Promise<string> {
     names.map(async (n) => {
       try {
         const info = await getCollectionInfo(n);
-        const count = info?.points_count ?? "?";
+        const count = await getCollectionCount(n);
         const dim = info?.config?.params?.vectors?.size ?? "?";
         return `  ${n}  points=${count}  dim=${dim}`;
       } catch {
@@ -553,8 +630,9 @@ async function toolListCollections(): Promise<string> {
 
 async function toolDescribeCollection(args: { collection: string }): Promise<string> {
   if (!args?.collection) return "Error: collection is required.";
+  const route = await activeRoute(args.collection);
   const info = await getCollectionInfo(args.collection);
-  return JSON.stringify(info, null, 2);
+  return JSON.stringify({ logical_collection: args.collection, route, info }, null, 2);
 }
 
 async function toolInstinctSearch(args: { query: string; top_k?: number }): Promise<string> {
