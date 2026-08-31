@@ -37,10 +37,10 @@ interface ScoredResult {
   sources: string[];
 }
 
-interface BoostedResult extends ScoredResult {
+type BoostedResult<T extends ScoredResult> = T & {
   graphBoost: number;
   composite: number;
-}
+};
 
 interface FactLink {
   source_id: string;
@@ -73,11 +73,11 @@ export interface GraphNeighbor {
  * @param results - Scored results from RRF fusion (pre-composite)
  * @returns Results with graphBoost and reweighted composite scores
  */
-export function computeGraphBoost(
+export function computeGraphBoost<T extends ScoredResult>(
   db: Database,
-  results: ScoredResult[],
+  results: T[],
   supersededIds: Set<string> = new Set(),
-): BoostedResult[] {
+): BoostedResult<T>[] {
   if (results.length === 0) return [];
 
   const resultIds = new Set(results.map(r => r.id));

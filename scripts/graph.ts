@@ -818,6 +818,10 @@ Auto-link-orphans options:
   --max-links <n>       Max edges per orphan (default: 2)
   --dry-run             Preview matches without writing
 
+Auto-link-orphans options:
+  --max-links <n>       Max edges per orphan (default: 2)
+  --dry-run             Preview matches without writing
+
 Community-summarize options:
   --min-size <n>        Minimum component size to summarize (default: 5)
   --max-clusters <n>    Cap number of clusters processed this run (default: 300)
