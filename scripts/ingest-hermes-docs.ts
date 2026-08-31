@@ -86,6 +86,8 @@ async function ensureCollection(name: string, recreate: boolean) {
   await qReq("PUT", `/collections/${name}`, {
     vectors: { size: VECTOR_SIZE, distance: "Cosine" },
     on_disk_payload: true,
+    optimizers_config: { default_segment_number: 1 },
+    wal_config: { wal_capacity_mb: 8, wal_segments_ahead: 0 },
   });
   console.log(`  collection '${name}' ready.`);
 }

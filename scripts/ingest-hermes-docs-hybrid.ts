@@ -68,6 +68,8 @@ async function ensureHybridCollection(name: string, recreate: boolean) {
     vectors: { dense: { size: DENSE_DIM, distance: "Cosine" } },
     sparse_vectors: { sparse: { modifier: "idf" } },
     on_disk_payload: true,
+    optimizers_config: { default_segment_number: 1 },
+    wal_config: { wal_capacity_mb: 8, wal_segments_ahead: 0 },
   });
   console.log(`  collection '${name}' ready (dense=${DENSE_DIM}d cosine + sparse=BM25/IDF).`);
 }
