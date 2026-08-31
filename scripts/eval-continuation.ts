@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { readFileSync, existsSync, unlinkSync } from "fs";
 import { ensureContinuationSchema, createEpisodeRecord, upsertOpenLoop, detectContinuation } from "./continuation";
 
-const FIXTURE_PATH = "/home/workspace/Skills/zo-memory-system/assets/continuation-eval-fixture-set.json";
+const FIXTURE_PATH = new URL("../assets/continuation-eval-fixture-set.json", import.meta.url).pathname;
 const TEST_DB_PATH = "/tmp/zo-memory-continuation-eval.db";
 
 interface FixtureFact {
