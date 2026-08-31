@@ -10,8 +10,6 @@ PROMPT=$(printf '%s' "$INPUT" | jq -r '.prompt // empty' 2>/dev/null)
 ACTIVE_PERSONA=$(printf '%s' "$INPUT" | jq -r '.persona_id // empty' 2>/dev/null)
 PERSONA="alaric"
 
-# Skip memory gate for Alaric Voice — speed over context for voice sessions
-if [[ "$ACTIVE_PERSONA" == "fe5d7648" ]]; then exit 0; fi
 
 if [[ -z "$PROMPT" ]]; then exit 0; fi
 
@@ -24,6 +22,15 @@ if [[ "${INSTINCT_INJECT:-1}" == "1" && -f /home/workspace/.zo/instincts/instinc
   INSTINCTS=$(timeout 5 bun /home/workspace/Skills/instinct-harvester/scripts/observer.ts \
     brief --top 5 --context "$PROMPT" 2>/dev/null)
   [[ -n "$INSTINCTS" ]] && printf '<instincts>\n%s\n</instincts>\n' "$INSTINCTS"
+fi
+
+
+# ZOU-ADR: consult the architecture-decision store at decision moments.
+# Keyword-gated (fires only on decision-flavored prompts), keyword-matched (titles+intro),
+# additive, fail-open. Disable with ADR_INJECT=0; no-op when the store is absent/empty.
+if [[ "${ADR_INJECT:-1}" == "1" && -d /home/workspace/decisions ]]; then
+  ADRS=$(timeout 5 bun /home/workspace/Scripts/decisions-consult.ts "$PROMPT" 2>/dev/null)
+  [[ -n "$ADRS" ]] && printf '<decisions>\n%s\n</decisions>\n' "$ADRS"
 fi
 
 PAYLOAD=$(jq -n --arg m "$PROMPT" --arg p "$PERSONA" '{message:$m, persona:$p}')
