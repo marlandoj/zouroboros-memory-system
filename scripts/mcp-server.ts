@@ -137,7 +137,7 @@ async function toolMemorySearch(args: {
       ftsResults = db.prepare(`
     SELECT f.*, fts.rank
     FROM facts_fts fts
-    JOIN facts f ON f.id = fts.rowid
+    JOIN facts f ON f.rowid = fts.rowid
     WHERE fts.facts_fts MATCH ?
       ${ftsWhere.length ? "AND " + ftsWhere.join(" AND ") : ""}
     ORDER BY fts.rank
