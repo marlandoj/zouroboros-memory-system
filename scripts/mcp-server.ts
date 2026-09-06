@@ -101,6 +101,14 @@ function parseRelativeTime(input: string): number {
 // TOOL IMPLEMENTATIONS
 // ==========================================================================
 
+// Build a safe FTS5 expression from raw user text: tokenize on non-word
+// characters and double-quote each token so FTS5 operators (- : etc.) are
+// treated as literal text. Empty result means "skip the FTS leg".
+function toFts5Query(raw: string): string {
+  const tokens = raw.split(/[^\p{L}\p{N}_]+/u).filter(t => t.length > 0).slice(0, 16);
+  return tokens.map(t => '"' + t.replace(/"/g, "") + '"').join(" OR ");
+}
+
 async function toolMemorySearch(args: {
   query: string;
   category?: string;
@@ -120,7 +128,13 @@ async function toolMemorySearch(args: {
   ftsWhere.push("(f.expires_at IS NULL OR f.expires_at > ?)");
   ftsParams.push(nowSec);
 
-  const ftsResults = db.prepare(`
+  // FTS leg (guarded): sanitize the raw query into a safe FTS5 expression
+  // and never let an FTS5 parse error kill the tool - fall back to vector-only.
+  const ftsQuery = toFts5Query(query);
+  let ftsResults: Array<Record<string, unknown>> = [];
+  if (ftsQuery) {
+    try {
+      ftsResults = db.prepare(`
     SELECT f.*, fts.rank
     FROM facts_fts fts
     JOIN facts f ON f.id = fts.rowid
@@ -128,7 +142,9 @@ async function toolMemorySearch(args: {
       ${ftsWhere.length ? "AND " + ftsWhere.join(" AND ") : ""}
     ORDER BY fts.rank
     LIMIT ?
-  `).all(query, ...ftsParams, limit * 2) as Array<Record<string, unknown>>;
+  `).all(ftsQuery, ...ftsParams, limit * 2) as Array<Record<string, unknown>>;
+    } catch (e) { console.error("memory_search FTS fallback:", (e as Error).message); }
+  }
 
   // Vector search
   const queryEmbedding = await getEmbedding(query);
