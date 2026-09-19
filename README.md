@@ -417,3 +417,18 @@ export ZO_MEMORY_DB="/path/to/shared-facts.db"
 ## License
 
 MIT License -- Use freely, commercially or personally.
+
+## Jev fact-relation gate (ZOU-1676, shadow)
+
+`fact-extractor.ts` can ask TypeSafe Jev how a candidate fact relates to the existing fact it
+would supersede (duplicate, refinement, contradiction, unrelated). The client and all of its
+questions and thresholds live in `Skills/jev-skill-advisor/integrations/fact_relation.py`; see
+`Skills/jev-skill-advisor/references/fact-relation-contract.md`.
+
+- `JEV_FACT_RELATION_MODE`: `off` (default, nothing spawned), `shadow` (receipt only; the
+  supersede-and-halve path stays live), `advise` (assessed relations change the action).
+- `JEV_FACT_RELATION_SCRIPT`, `JEV_FACT_RELATION_PYTHON`: override the script path and interpreter.
+- Receipts go to the additive table `jev_fact_relation_receipts` in `shared-facts.db` and never
+  contain fact text. Any failure or timeout (15 s) falls back to the current behaviour.
+- Requires `TYPESAFE_API_KEY` in the calling process environment (the memory-gate daemon
+  forwards its environment to `inline-capture.ts`).
