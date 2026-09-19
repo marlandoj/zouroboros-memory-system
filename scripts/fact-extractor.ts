@@ -64,6 +64,7 @@ export interface ExtractResult {
   skipped: Array<{ fact: CapturedFact; reason: string }>;
   contradictions: number;
   links_created: number;
+  relation_receipts: number;
   duration_ms: number;
   source: string;
 }
@@ -104,6 +105,7 @@ export function getExtractorDb(): Database {
     );
   `);
   ensureContinuationSchema(db);
+  ensureRelationReceiptSchema(db);
   return db;
 }
 
@@ -188,18 +190,184 @@ function checkExisting(
   entity: string,
   key: string,
   value: string
-): { isDuplicate: boolean; contradicts: string | null } {
+): { isDuplicate: boolean; contradicts: string | null; existingValue: string | null } {
   const existing = db.prepare(
     "SELECT id, value FROM facts WHERE entity = ? AND key = ? AND (expires_at IS NULL OR expires_at > ?)"
   ).all(entity, key, Math.floor(Date.now() / 1000)) as any[];
 
-  if (existing.length === 0) return { isDuplicate: false, contradicts: null };
+  if (existing.length === 0) return { isDuplicate: false, contradicts: null, existingValue: null };
 
   for (const row of existing) {
-    if (row.value === value) return { isDuplicate: true, contradicts: null };
+    if (row.value === value) return { isDuplicate: true, contradicts: null, existingValue: row.value };
   }
 
-  return { isDuplicate: false, contradicts: existing[0].id };
+  return { isDuplicate: false, contradicts: existing[0].id, existingValue: existing[0].value };
+}
+
+// --- Jev fact-relation gate ---
+// Advisory relation between a candidate fact and the existing same-key fact it would supersede.
+// Questions, criteria and thresholds live in Skills/jev-skill-advisor/integrations/fact_relation.py.
+// JEV_FACT_RELATION_MODE: off (default) | shadow (receipt only; supersede stays live) | advise.
+// Any failure, timeout or malformed receipt falls back to the baseline supersede action.
+
+export type RelationMode = "off" | "shadow" | "advise";
+export type RelationAction = "supersede" | "skip" | "refine" | "coexist";
+export interface RelationDecision {
+  action: RelationAction;
+  receipt: Record<string, any> | null;
+}
+export interface RelationInput {
+  entity: string;
+  key: string;
+  existingId: string;
+  existingValue: string;
+  candidateValue: string;
+  source: string;
+}
+export interface RelationOptions {
+  mode?: RelationMode;
+  script?: string;
+  python?: string;
+  timeoutMs?: number;
+}
+
+const RELATION_SCHEMA = "jev-fact-relation/v1";
+const RELATION_ACTIONS: RelationAction[] = ["supersede", "skip", "refine", "coexist"];
+const RELATION_SCRIPT_DEFAULT = "/home/workspace/Skills/jev-skill-advisor/integrations/fact_relation.py";
+const RELATION_TIMEOUT_MS = 15000;
+
+export function relationMode(): RelationMode {
+  const raw = (process.env.JEV_FACT_RELATION_MODE || "off").trim().toLowerCase();
+  return raw === "shadow" || raw === "advise" ? raw : "off";
+}
+
+export function ensureRelationReceiptSchema(db: Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS jev_fact_relation_receipts (
+      id TEXT PRIMARY KEY,
+      created_at INTEGER NOT NULL,
+      mode TEXT NOT NULL,
+      status TEXT NOT NULL,
+      reason TEXT,
+      existing_id TEXT NOT NULL,
+      candidate_id TEXT,
+      entity TEXT,
+      key TEXT,
+      source TEXT,
+      baseline_action TEXT NOT NULL,
+      recommended_relation TEXT,
+      effective_action TEXT NOT NULL,
+      probabilities TEXT,
+      confidence REAL,
+      incompatible REAL,
+      same_information REAL,
+      request_digest TEXT,
+      pair_digest TEXT,
+      elapsed_ms REAL,
+      input_tokens INTEGER,
+      estimated_cost_usd REAL,
+      adapter_version TEXT,
+      model TEXT,
+      policy_version TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_jev_fact_relation_existing ON jev_fact_relation_receipts(existing_id);
+    CREATE INDEX IF NOT EXISTS idx_jev_fact_relation_created ON jev_fact_relation_receipts(created_at DESC);
+  `);
+}
+
+function fallbackReceipt(mode: RelationMode, input: RelationInput, reason: string): Record<string, any> {
+  return {
+    schema_version: RELATION_SCHEMA,
+    mode,
+    status: "fallback",
+    reason,
+    existing_id: input.existingId,
+    entity: input.entity,
+    key: input.key,
+    baseline: { relation: "contradiction", action: "supersede" },
+    recommendation: null,
+    effective: { relation: "contradiction", action: "supersede" },
+    answers: null,
+    usage: null,
+    elapsed_ms: 0,
+  };
+}
+
+export async function resolveFactRelation(input: RelationInput, opts: RelationOptions = {}): Promise<RelationDecision> {
+  const mode = opts.mode ?? relationMode();
+  if (mode === "off") return { action: "supersede", receipt: null };
+  const script = opts.script ?? process.env.JEV_FACT_RELATION_SCRIPT ?? RELATION_SCRIPT_DEFAULT;
+  const python = opts.python ?? process.env.JEV_FACT_RELATION_PYTHON ?? "python3";
+  const timeoutMs = opts.timeoutMs ?? RELATION_TIMEOUT_MS;
+  const payload = JSON.stringify({
+    entity: input.entity,
+    key: input.key,
+    existing: { id: input.existingId, value: input.existingValue },
+    candidate: { value: input.candidateValue },
+    source: input.source,
+  });
+  let timedOut = false;
+  try {
+    const proc = Bun.spawn([python, script, "assess", "--mode", mode], {
+      stdin: Buffer.from(payload),
+      stdout: "pipe",
+      stderr: "ignore",
+      env: { ...process.env },
+    });
+    const timer = setTimeout(() => { timedOut = true; proc.kill(); }, timeoutMs);
+    const stdout = await new Response(proc.stdout).text();
+    await proc.exited;
+    clearTimeout(timer);
+    if (timedOut) return { action: "supersede", receipt: fallbackReceipt(mode, input, "timeout") };
+    let parsed: any = null;
+    try {
+      parsed = JSON.parse(stdout);
+    } catch {
+      parsed = null;
+    }
+    if (!parsed || typeof parsed !== "object" || parsed.schema_version !== RELATION_SCHEMA || parsed.status === "invalid") {
+      return { action: "supersede", receipt: fallbackReceipt(mode, input, "invalid_receipt") };
+    }
+    const advised = parsed?.effective?.action;
+    const action: RelationAction =
+      mode === "advise" && parsed.status === "assessed" && RELATION_ACTIONS.includes(advised) ? advised : "supersede";
+    return { action, receipt: parsed };
+  } catch (err) {
+    return { action: "supersede", receipt: fallbackReceipt(mode, input, timedOut ? "timeout" : "spawn_failed") };
+  }
+}
+
+export function writeRelationReceipt(
+  db: Database,
+  decision: RelationDecision,
+  extra: { candidateId: string | null; source: string }
+): boolean {
+  const r = decision.receipt;
+  if (!r) return false;
+  const answers = r.answers ?? null;
+  try {
+    db.prepare(`
+      INSERT INTO jev_fact_relation_receipts (
+        id, created_at, mode, status, reason, existing_id, candidate_id, entity, key, source,
+        baseline_action, recommended_relation, effective_action, probabilities, confidence, incompatible,
+        same_information, request_digest, pair_digest, elapsed_ms, input_tokens, estimated_cost_usd,
+        adapter_version, model, policy_version
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      randomUUID(), Math.floor(Date.now() / 1000), r.mode ?? "off", r.status ?? "fallback", r.reason ?? null,
+      r.existing_id ?? "", extra.candidateId, r.entity ?? null, r.key ?? null, extra.source,
+      "supersede", r.recommendation?.relation ?? null, decision.action,
+      answers?.relation?.probabilities ? JSON.stringify(answers.relation.probabilities) : null,
+      answers?.relation?.confidence ?? null, answers?.incompatible?.noul ?? null, answers?.same_information?.noul ?? null,
+      r.request_digest ?? null, r.pair_digest ?? null, r.elapsed_ms ?? null,
+      r.usage?.input_tokens ?? null, r.estimated_cost_usd ?? null, r.adapter_version ?? null, r.model ?? null,
+      r.policy_version ?? null
+    );
+    return true;
+  } catch (err) {
+    console.error(`[fact-relation] receipt write failed: ${err}`);
+    return false;
+  }
 }
 
 // --- Main Pipeline ---
@@ -216,7 +384,7 @@ export async function extractAndStoreFacts(
   const existing = db.prepare("SELECT id FROM capture_log WHERE transcript_hash = ? AND capture_mode = 'inline'").get(hash);
   if (existing) {
     db.close();
-    return { stored: [], skipped: [], contradictions: 0, links_created: 0, duration_ms: 0, source: options.source };
+    return { stored: [], skipped: [], contradictions: 0, links_created: 0, relation_receipts: 0, duration_ms: 0, source: options.source };
   }
 
   // Model selection: model-client handles provider routing + fallback via ZO_MODEL_EXTRACTION
@@ -226,6 +394,7 @@ export async function extractAndStoreFacts(
   const skipped: Array<{ fact: CapturedFact; reason: string }> = [];
   let contradictions = 0;
   let linksCreated = 0;
+  let relationReceipts = 0;
   const storedIds: string[] = [];
 
   for (const fact of candidates) {
@@ -238,10 +407,27 @@ export async function extractAndStoreFacts(
       continue;
     }
 
-    const { isDuplicate, contradicts } = checkExisting(db, fact.entity, fact.key, fact.value);
+    const { isDuplicate, contradicts, existingValue } = checkExisting(db, fact.entity, fact.key, fact.value);
     if (isDuplicate) {
       skipped.push({ fact, reason: "duplicate" });
       continue;
+    }
+
+    let relation: RelationDecision | null = null;
+    if (contradicts && !options.dryRun) {
+      relation = await resolveFactRelation({
+        entity: fact.entity,
+        key: fact.key,
+        existingId: contradicts,
+        existingValue: existingValue ?? "",
+        candidateValue: fact.value,
+        source: options.source,
+      });
+      if (relation.action === "skip") {
+        if (writeRelationReceipt(db, relation, { candidateId: null, source: options.source })) relationReceipts++;
+        skipped.push({ fact, reason: "duplicate (jev)" });
+        continue;
+      }
     }
 
     if (options.dryRun) {
@@ -276,10 +462,18 @@ export async function extractAndStoreFacts(
     }
 
     if (contradicts) {
-      db.prepare("INSERT OR IGNORE INTO fact_links (source_id, target_id, relation, weight) VALUES (?, ?, 'supersedes', 1.0)")
-        .run(id, contradicts);
-      db.prepare("UPDATE facts SET confidence = confidence * 0.5 WHERE id = ?").run(contradicts);
-      contradictions++;
+      const action = relation?.action ?? "supersede";
+      if (action === "supersede") {
+        db.prepare("INSERT OR IGNORE INTO fact_links (source_id, target_id, relation, weight) VALUES (?, ?, 'supersedes', 1.0)")
+          .run(id, contradicts);
+        db.prepare("UPDATE facts SET confidence = confidence * 0.5 WHERE id = ?").run(contradicts);
+        contradictions++;
+      } else if (action === "refine") {
+        db.prepare("INSERT OR IGNORE INTO fact_links (source_id, target_id, relation, weight) VALUES (?, ?, 'update_of', 1.0)")
+          .run(id, contradicts);
+        linksCreated++;
+      }
+      if (relation && writeRelationReceipt(db, relation, { candidateId: id, source: options.source })) relationReceipts++;
     }
 
     // Open loop resolution
@@ -317,5 +511,6 @@ export async function extractAndStoreFacts(
   }
 
   db.close();
-  return { stored, skipped, contradictions, links_created: linksCreated, duration_ms, source: options.source };
+  return { stored, skipped, contradictions, links_created: linksCreated,
+    relation_receipts: relationReceipts, duration_ms, source: options.source };
 }
