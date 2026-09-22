@@ -28,7 +28,7 @@ export type InlineFtsResult = {
   quarantined: number;
 };
 
-function getSearchDb(dbPath: string, evaluationReadOnly: boolean): Database {
+export function getSearchDb(dbPath: string, evaluationReadOnly = false): Database {
   const cacheKey = `${evaluationReadOnly ? "eval" : "runtime"}:${dbPath}`;
   let cached = dbCache.get(cacheKey);
   if (!cached) {
