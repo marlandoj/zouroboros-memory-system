@@ -19,8 +19,6 @@ import { generate } from "./model-client";
 import { extractWikilinks } from "./wikilink-utils";
 import { getPersonaDomain } from "./domain-map.ts";
 import { generateBriefing } from "./session-briefing.ts";
-import { buildCodeContext } from "./code-rag.ts";
-import { buildMimirLessonContext } from "./mimir-academy-rag.ts";
 import { logGateDecision } from "./scorecard.ts";
 
 const MEMORY_SCRIPT = "/home/workspace/Skills/zo-memory-system/scripts/memory.ts";
@@ -164,8 +162,6 @@ export function markBriefingInjected(): void {
   process.env.BRIEFING_INJECTED = "1";
 }
 
-type BriefingGenerator = typeof generateBriefing;
-
 /**
  * Generates and returns a session briefing for the given persona.
  * Call this once at conversation start (first user message) to inject
@@ -174,10 +170,7 @@ type BriefingGenerator = typeof generateBriefing;
  *
  * Returns null if persona is excluded or briefing generation fails.
  */
-export async function injectSessionBriefing(
-  personaSlug: string,
-  briefingGenerator: BriefingGenerator = generateBriefing,
-): Promise<string | null> {
+export async function injectSessionBriefing(personaSlug: string): Promise<string | null> {
   // No persona exclusions — CLI transports (claude-code, gemini-cli, codex-cli)
   // should never be passed here; the rule maps them to the intended persona (e.g., "alaric").
   // Hermes is excluded at the rule level (omits --persona flag).
@@ -185,7 +178,7 @@ export async function injectSessionBriefing(
   try {
     const domain = getPersonaDomain(personaSlug);
     const effectiveDomain = domain === "shared" || domain === "personal" ? undefined : domain;
-    const result = await briefingGenerator(personaSlug, effectiveDomain);
+    const result = await generateBriefing(personaSlug, effectiveDomain);
 
     if (!result.briefing || result.briefing.startsWith("No recent activity")) {
       return null;
@@ -205,27 +198,6 @@ export async function injectSessionBriefing(
     }
     if (result.inherited_facts.length > 0) {
       parts.push(`Cross-persona: ${result.inherited_facts.join("; ")}`);
-    }
-    const enrichmentSeed = [result.one_thing, ...result.active_items].join(" ");
-
-    // Code-RAG enrichment (read-only, non-fatal): surface real source paths from
-    // the codebase-memory graph relevant to the current work focus. Degrades to
-    // silently omitting the block if the graph is unreachable — never throws.
-    try {
-      const codeBlock = await buildCodeContext(enrichmentSeed);
-      if (codeBlock) parts.push(codeBlock);
-    } catch {
-      /* graph unreachable — omit block */
-    }
-
-    // Mimir Academy enrichment: lesson-relevant code context for Mimir persona
-    if (personaSlug.toLowerCase().includes("mimir")) {
-      try {
-        const mimirBlock = await buildMimirLessonContext(enrichmentSeed);
-        if (mimirBlock) parts.push(mimirBlock);
-      } catch {
-        /* graph unreachable — omit block */
-      }
     }
 
     return parts.join("\n");

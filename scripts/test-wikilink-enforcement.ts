@@ -142,7 +142,7 @@ const db = createTestDb();
   const result = autoCorrectWikilinks("Integrates system.memory and tool.ollama", db);
   assert(result !== null, "Corrects multiple known entities");
   assert(
-    result !== null && result.corrected_value.includes("[[system.memory]]") && result.corrected_value.includes("[[tool.ollama]]"),
+    Boolean(result?.corrected_value.includes("[[system.memory]]") && result?.corrected_value.includes("[[tool.ollama]]")),
     "Both entities wrapped",
     result?.corrected_value
   );
@@ -199,12 +199,12 @@ console.log("\n=== Auto-Correction: Exclusion Filter in Context ===\n");
   const result = autoCorrectWikilinks("Visit example.com for docs about project.ffb", db);
   assert(result !== null, "Corrects project.ffb but not example.com");
   assert(
-    !result?.corrected_value.includes("[[example.com]]"),
+    result ? !result.corrected_value.includes("[[example.com]]") : false,
     "Does not wrap .com domain",
     result?.corrected_value
   );
   assert(
-    result !== null && result.corrected_value.includes("[[project.ffb]]"),
+    Boolean(result?.corrected_value.includes("[[project.ffb]]")),
     "Does wrap project.ffb",
     result?.corrected_value
   );
@@ -220,12 +220,12 @@ console.log("\n=== Auto-Correction: Self-Entity Skip ===\n");
   const result = autoCorrectWikilinks("The project.ffb system uses tool.ollama", db, "project.ffb");
   assert(result !== null, "Still corrects other entities");
   assert(
-    !result?.corrected_value.includes("[[project.ffb]]"),
+    result ? !result.corrected_value.includes("[[project.ffb]]") : false,
     "Does not wrap self-entity",
     result?.corrected_value
   );
   assert(
-    result !== null && result.corrected_value.includes("[[tool.ollama]]"),
+    Boolean(result?.corrected_value.includes("[[tool.ollama]]")),
     "Wraps non-self entity",
     result?.corrected_value
   );

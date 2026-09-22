@@ -18,6 +18,7 @@ import { loadPersonaContext } from "./vault-persona-loader.ts";
 import { searchCrossPersona, getAccessiblePersonas } from "./cross-persona.ts";
 import { getPersonaDomain, getPersonaDomains } from "./domain-map.ts";
 import { generate as mcGenerate } from "./model-client";
+import { findGraphNeighborsDeep } from "./graph-boost.ts";
 
 const DEFAULT_DB_PATH = process.env.ZO_MEMORY_DB || "/home/workspace/.zo/memory/shared-facts.db";
 const DEFAULT_MAX_TOKENS = 500;
@@ -30,6 +31,7 @@ interface SessionBriefing {
   active_items: string[];
   recent_episodes: string[];
   inherited_facts: string[];
+  graph_facts: string[];
   vault_context: string[];
   generated_at: number;
   latency_ms: number;
@@ -150,6 +152,81 @@ function getInheritedFacts(persona: string, domain?: string, limit = 3, dbPath?:
   }
 }
 
+// ── Step 4.5: Graph-Linked Knowledge (2-hop GraphRAG enrichment) ──────────
+
+const GRAPH_AUTO_SOURCE = /^(fact-extractor|conversation|inline|swarm|auto|rag|web|tool|mimir)/i;
+const GRAPH_CONFIDENCE_FLOOR = 0.5;
+// Env toggle: ZO_BRIEFING_GRAPH=always|off (default always). "always" means GraphRAG
+// enrichment runs alongside every briefing, not as a fallback.
+const GRAPH_ON = (process.env.ZO_BRIEFING_GRAPH ?? "always").toLowerCase() !== "off";
+
+function getGraphLinkedFacts(persona: string, domain?: string, limit = 8, dbPath?: string): string[] {
+  if (!GRAPH_ON) return [];
+  const db = new Database(dbPath ?? DEFAULT_DB_PATH, { readonly: true });
+  try {
+    // Seeds: FTS5 keyword match on persona/domain, gated rows excluded.
+    const terms = [persona, domain ?? ""].map((w) => w.replace(/[^\w]/g, "")).filter((w) => w.length > 1);
+    const fernTokens = domain
+      ? domain.split(/[\s+\-_]+/).filter((w) => w.length > 2)
+      : [];
+    const all = [...terms, ...fernTokens];
+    const seeded: string[] = [];
+    if (all.length > 0) {
+      const ftsQ = all.map((w) => `${w}*`).join(" OR ");
+      const rows = db.query(`
+        SELECT f.id FROM facts_fts
+        JOIN facts f ON f.rowid = facts_fts.rowid
+        WHERE facts_fts MATCH ? AND (f.gate_status IS NULL OR f.gate_status != 'hold')
+        ORDER BY bm25(facts_fts) LIMIT 10
+      `).all(ftsQ) as { id: string }[];
+      for (const r of rows) seeded.push(String(r.id));
+    }
+    // Fallback seeds: recent high-confidence facts so the graph walk still fires
+    // for personas/domains with no lexical FTS hits.
+    if (seeded.length === 0) {
+      const rows = db.query(`
+        SELECT id FROM facts
+        WHERE (gate_status IS NULL OR gate_status != 'hold')
+          AND (expires_at IS NULL OR expires_at > ?)
+        ORDER BY created_at DESC LIMIT 5
+      `).all(Math.floor(Date.now() / 1000)) as { id: string }[];
+      for (const r of rows) seeded.push(String(r.id));
+    }
+    if (seeded.length === 0) return [];
+
+    // 2-hop BFS over fact_links + vault_links (built-in 150ms / 20-node guards).
+    const nodes = findGraphNeighborsDeep(db, seeded, new Set(seeded), 2);
+    const out: string[] = [];
+    const seenValues = new Set<string>();
+    for (const n of nodes) {
+      if (out.length >= limit) break;
+      if (n.type === "vault_file") {
+        out.push(`[graph h${n.hop}] 📄 ${n.title ?? n.file_path}`);
+        continue;
+      }
+      const value = String(n.value || "").slice(0, 120);
+      const print = value.slice(0, 64).toLowerCase();
+      if (seenValues.has(print)) continue;
+      seenValues.add(print);
+      if (!value) continue;
+      // Trust gate: pull source/confidence for fact nodes, quarantine low-confidence
+      // auto-captured rows (same posture as the memory gate).
+      const meta = db.prepare("SELECT source, confidence FROM facts WHERE id = ?").get(n.id) as
+        { source: string | null; confidence: number | null } | null;
+      if (meta) {
+        const c = meta.confidence != null ? Number(meta.confidence) : null;
+        if (GRAPH_AUTO_SOURCE.test(String(meta.source || "")) && c != null && c < GRAPH_CONFIDENCE_FLOOR) continue;
+      }
+      out.push(`[graph h${n.hop}] ${n.entity}: ${value}`);
+    }
+    return out;
+  } catch {
+    return [];
+  } finally {
+    db.close();
+  }
+}
+
 // ── Step 5: Ollama Synthesis ───────────────────────────────────────────────
 
 async function synthesize(
@@ -159,6 +236,7 @@ async function synthesize(
   episodes: string[],
   openLoops: string[],
   inheritedFacts: string[],
+  graphFacts: string[],
   maxTokens: number,
 ): Promise<string> {
   const contextParts: string[] = [];
@@ -174,6 +252,9 @@ async function synthesize(
   }
   if (inheritedFacts.length > 0) {
     contextParts.push(`Cross-persona knowledge: ${inheritedFacts.join("; ")}`);
+  }
+  if (graphFacts.length > 0) {
+    contextParts.push(`Associative graph knowledge (2-hop over fact graph): ${graphFacts.join("; ")}`);
   }
 
   if (contextParts.length === 0) {
@@ -238,12 +319,14 @@ async function synthesizeOneThing(
   episodes: string[],
   openLoops: string[],
   inheritedFacts: string[],
+  graphFacts: string[] = [],
 ): Promise<string> {
   const haveSignal =
     vaultContext.length > 0 ||
     episodes.length > 0 ||
     openLoops.length > 0 ||
-    inheritedFacts.length > 0;
+    inheritedFacts.length > 0 ||
+    graphFacts.length > 0;
 
   if (!haveSignal) return FALSIFY_MSG;
 
@@ -252,6 +335,7 @@ async function synthesizeOneThing(
     episodes.length > 0 ? `RECENT ACTIVITY:\n${episodes.map(e => `  - ${e}`).join("\n")}` : "",
     vaultContext.length > 0 ? `VAULT FILES:\n${vaultContext.map(v => `  - ${v}`).join("\n")}` : "",
     inheritedFacts.length > 0 ? `CROSS-PERSONA:\n${inheritedFacts.map(f => `  - ${f}`).join("\n")}` : "",
+    graphFacts.length > 0 ? `GRAPH-LINKED KNOWLEDGE:\n${graphFacts.map(g => `  - ${g}`).join("\n")}` : "",
   ].filter(Boolean).join("\n\n");
 
   const prompt = `You are picking the SINGLE most important next action for the "${persona}" persona${domain ? ` (domain: ${domain})` : ""}.
@@ -338,9 +422,11 @@ export async function generateBriefing(
     const vaultContext = allVault.slice(0, 8);
     const domainLabel = multiDomains.join("+");
 
+    const graphFacts = getGraphLinkedFacts(persona, domainLabel, 8, dbPath);
+
     const [briefing, one_thing] = await Promise.all([
-      synthesize(persona, domainLabel, vaultContext, episodes, openLoops, inheritedFacts, maxTokens),
-      synthesizeOneThing(persona, domainLabel, vaultContext, episodes, openLoops, inheritedFacts),
+      synthesize(persona, domainLabel, vaultContext, episodes, openLoops, inheritedFacts, graphFacts, maxTokens),
+      synthesizeOneThing(persona, domainLabel, vaultContext, episodes, openLoops, inheritedFacts, graphFacts),
     ]);
 
     const latency_ms = Math.round(performance.now() - start);
@@ -352,6 +438,7 @@ export async function generateBriefing(
       active_items: openLoops,
       recent_episodes: episodes,
       inherited_facts: inheritedFacts,
+      graph_facts: graphFacts,
       vault_context: vaultContext,
       generated_at: Math.floor(Date.now() / 1000),
       latency_ms,
@@ -372,10 +459,11 @@ export async function generateBriefing(
     Promise.resolve(getOpenLoops(persona, 5, dbPath)),
     Promise.resolve(getInheritedFacts(persona, domain, 3, dbPath)),
   ]);
+  const graphFacts = getGraphLinkedFacts(persona, domain, 8, dbPath);
 
   const [briefing, one_thing] = await Promise.all([
-    synthesize(persona, domain ?? null, vaultContext, episodes, openLoops, inheritedFacts, maxTokens),
-    synthesizeOneThing(persona, domain ?? null, vaultContext, episodes, openLoops, inheritedFacts),
+    synthesize(persona, domain ?? null, vaultContext, episodes, openLoops, inheritedFacts, graphFacts, maxTokens),
+    synthesizeOneThing(persona, domain ?? null, vaultContext, episodes, openLoops, inheritedFacts, graphFacts),
   ]);
 
   const latency_ms = Math.round(performance.now() - start);
@@ -388,6 +476,7 @@ export async function generateBriefing(
     active_items: openLoops,
     recent_episodes: episodes,
     inherited_facts: inheritedFacts,
+    graph_facts: graphFacts,
     vault_context: vaultContext,
     generated_at: Math.floor(Date.now() / 1000),
     latency_ms,
@@ -447,6 +536,10 @@ if (import.meta.main) {
     if (result.vault_context.length > 0) {
       console.log(`\n--- Vault Context (${result.vault_context.length}) ---`);
       for (const f of result.vault_context) console.log(`  • ${f}`);
+    }
+    if (result.graph_facts && result.graph_facts.length > 0) {
+      console.log(`\n--- Graph-Linked Knowledge (${result.graph_facts.length}) ---`);
+      for (const f of result.graph_facts) console.log(`  • ${f}`);
     }
   }
 }

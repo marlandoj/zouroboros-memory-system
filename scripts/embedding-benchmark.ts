@@ -43,12 +43,8 @@ async function checkModelAvailable(model: string): Promise<boolean> {
   try {
     const resp = await fetch(`${OLLAMA_URL}/api/tags`);
     if (!resp.ok) return false;
-    const data = await resp.json();
-    if (!data || typeof data !== "object" || !("models" in data) || !Array.isArray(data.models)) return false;
-    const models = data.models.flatMap((entry): string[] => {
-      if (!entry || typeof entry !== "object" || !("name" in entry) || typeof entry.name !== "string") return [];
-      return [entry.name];
-    });
+    const data = await resp.json() as { models?: Array<{ name: string }> };
+    const models = (data.models || []).map((model) => model.name);
     return models.some((m) => m.startsWith(model));
   } catch { return false; }
 }
@@ -63,12 +59,8 @@ async function embedText(model: string, text: string): Promise<{ embedding: numb
       signal: AbortSignal.timeout(60000),
     });
     if (!resp.ok) return { embedding: null, time_ms: Date.now() - start };
-    const data = await resp.json();
-    const embedding = data && typeof data === "object" && "embedding" in data && Array.isArray(data.embedding)
-      && data.embedding.every((value) => typeof value === "number")
-      ? data.embedding
-      : null;
-    return { embedding, time_ms: Date.now() - start };
+    const data = await resp.json() as { embedding?: number[] };
+    return { embedding: data.embedding || null, time_ms: Date.now() - start };
   } catch { return { embedding: null, time_ms: Date.now() - start }; }
 }
 

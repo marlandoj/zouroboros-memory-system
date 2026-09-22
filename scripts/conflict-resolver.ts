@@ -114,8 +114,6 @@ export async function detectNewConflict(db: Database, entity: string, key: strin
   `).all(entity, ...(key ? [key] : []), Math.floor(Date.now() / 1000)) as Array<Record<string, unknown>>;
 
   for (const ef of existing) {
-    const existingFactId = typeof ef.id === "string" ? ef.id : null;
-    if (!existingFactId) continue;
     if ((ef.value as string).trim().toLowerCase() === newValue.trim().toLowerCase()) continue;
     const isContradict = await isContradiction(
       { value: newValue, entity, key },
@@ -124,8 +122,10 @@ export async function detectNewConflict(db: Database, entity: string, key: strin
     if (isContradict) {
       const nowSec = Math.floor(Date.now() / 1000);
       const cid = randomUUID();
-      db.prepare(`INSERT OR IGNORE INTO fact_conflicts (id, fact_id, conflicting_fact_id, conflict_type, resolution, created_at) VALUES (?, ?, ?, 'semantic', 'pending', ?)`).run(cid, existingFactId, randomUUID(), nowSec);
-      return { id: cid, factId: existingFactId, conflictingFactId: existingFactId, conflictType: "semantic", resolution: "pending", fact1Value: ef.value as string, fact2Value: newValue, createdAt: nowSec };
+      const factId = ef.id as string;
+      const conflictingFactId = randomUUID();
+      db.prepare(`INSERT OR IGNORE INTO fact_conflicts (id, fact_id, conflicting_fact_id, conflict_type, resolution, created_at) VALUES (?, ?, ?, 'semantic', 'pending', ?)`).run(cid, factId, conflictingFactId, nowSec);
+      return { id: cid, factId, conflictingFactId, conflictType: "semantic", resolution: "pending", fact1Value: ef.value as string, fact2Value: newValue, createdAt: nowSec };
     }
   }
   return null;

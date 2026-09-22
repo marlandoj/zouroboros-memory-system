@@ -37,10 +37,10 @@ interface ScoredResult {
   sources: string[];
 }
 
-interface BoostedResult extends ScoredResult {
+type BoostedResult<T extends ScoredResult> = T & {
   graphBoost: number;
   composite: number;
-}
+};
 
 interface FactLink {
   source_id: string;

@@ -172,7 +172,22 @@ export function resolveConfiguredModel(workload: Workload, explicitModel?: strin
 
 // ─── OpenAI ───────────────────────────────────────────────────────────────────
 
-const OPENAI_TOKEN = process.env.OPENAI_API_KEY || process.env.ZO_OPENAI_API_KEY || "";
+// Self-heal: non-interactive zsh (Claude Code Bash tool) ignores BASH_ENV, so
+// the ambient env can lack the key — fall back to /root/.zo_secrets, matching
+// the pattern in mcp-server-http.ts / qdrant-rag-mcp.ts.
+function resolveOpenAIToken(): string {
+  const fromEnv = process.env.OPENAI_API_KEY || process.env.ZO_OPENAI_API_KEY || "";
+  if (fromEnv && !fromEnv.startsWith("reference secret by name")) return fromEnv;
+  try {
+    const { readFileSync } = require("fs");
+    const secrets = readFileSync(process.env.ZO_SECRETS_PATH || "/root/.zo_secrets", "utf-8");
+    const m = secrets.match(/^(?:export\s+)?OPENAI_API_KEY=["']?([^"'\n]+)["']?\s*$/m);
+    if (m) return m[1];
+  } catch {}
+  return "";
+}
+
+const OPENAI_TOKEN = resolveOpenAIToken();
 
 async function openaiGenerate(opts: GenerateOptions): Promise<GenerateResult> {
   if (!OPENAI_TOKEN) throw new Error("OPENAI_API_KEY not set");

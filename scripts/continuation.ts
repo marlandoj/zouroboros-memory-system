@@ -568,13 +568,9 @@ export function upsertOpenLoop(db: Database, input: OpenLoopInput): OpenLoopReco
   `).get(fingerprint) as Record<string, unknown> | null;
 
   if (existing) {
-    const existingId = typeof existing.id === "string" ? existing.id : null;
-    if (!existingId) {
-      throw new Error("open_loops row is missing a string id");
-    }
     const existingSource = typeof existing.source === "string" ? existing.source : null;
-    const existingRelatedEpisodeId = typeof existing.related_episode_id === "string" ? existing.related_episode_id : null;
-    const existingMetadata = typeof existing.metadata === "string" ? existing.metadata : null;
+    const existingEpisodeId = typeof existing.related_episode_id === "string" ? existing.related_episode_id : null;
+    const existingId = existing.id as string;
     db.prepare(`
       UPDATE open_loops
       SET summary = ?, priority = ?, entity = ?, source = ?, related_episode_id = ?, metadata = ?, updated_at = ?, status = ?
@@ -584,8 +580,8 @@ export function upsertOpenLoop(db: Database, input: OpenLoopInput): OpenLoopReco
       priority,
       entity,
       input.source || existingSource,
-      input.relatedEpisodeId || existingRelatedEpisodeId,
-      safeJson(input.metadata) || existingMetadata,
+      input.relatedEpisodeId || existingEpisodeId,
+      safeJson(input.metadata) || (existing.metadata as string) || null,
       nowSec,
       status,
       existingId
@@ -602,8 +598,8 @@ export function upsertOpenLoop(db: Database, input: OpenLoopInput): OpenLoopReco
       status,
       priority,
       entity,
-      source: (input.source || existing.source) as string | undefined,
-      relatedEpisodeId: (input.relatedEpisodeId || existing.related_episode_id) as string | null | undefined,
+      source: input.source || existingSource || undefined,
+      relatedEpisodeId: input.relatedEpisodeId || existingEpisodeId,
       metadata: input.metadata,
       fingerprint,
       createdAt: existing.created_at as number,
@@ -678,14 +674,12 @@ export function resolveMatchingOpenLoops(db: Database, text: string): number {
     const haystack = `${row.title || ""} ${row.summary || ""}`.toLowerCase();
     const matches = keywords.filter((k) => haystack.includes(k)).length;
     if (matches >= 2) {
-      const rowId = typeof row.id === "string" ? row.id : null;
-      if (!rowId) continue;
       db.prepare(`
         UPDATE open_loops
         SET status = 'resolved', resolved_at = ?, updated_at = ?
         WHERE id = ?
-      `).run(Math.floor(Date.now() / 1000), Math.floor(Date.now() / 1000), rowId);
-      syncOpenLoopFts(db, rowId, row.title as string, row.summary as string, row.kind as OpenLoopKind, "resolved", row.entity as string | null);
+      `).run(Math.floor(Date.now() / 1000), Math.floor(Date.now() / 1000), row.id as string);
+      syncOpenLoopFts(db, row.id as string, row.title as string, row.summary as string, row.kind as OpenLoopKind, "resolved", row.entity as string | null);
       resolved++;
     }
   }
@@ -791,8 +785,6 @@ export function detectContinuation(message: string): ContinuationDetection {
   if (/\b(what did we decide|where did we leave off|where did we stop|what was the result|what happened)\b/.test(lower)) score += 3;
   if (/\b(next step|tracking|track|focus|status|progress|review|dashboard|supplier|scorecard|risk dashboard)\b/.test(lower)) score += 2;
   if (/\b(what were we|what are we|is there still|are we still)\b/.test(lower)) score += 2;
-  if (/\b(did|have|do)\s+we\b[^.?!]{0,60}\b(decide|decided|adopt|choose|chose|agree|agreed|approve|reject|skip|skipped|ship|launch|go with|settle on)\b/.test(lower)) score += 3;
-  if (/\b(apply|applying|reuse|transfer|extend|generalize)\b[^.?!]{0,60}\b(playbook|strategy|approach|pattern|method|technique|tactic)\b/.test(lower)) score += 2;
 
   if (/^(write|explain|define|what is|how do i|create a new|build a new)\b/.test(lower)) score -= 2;
 

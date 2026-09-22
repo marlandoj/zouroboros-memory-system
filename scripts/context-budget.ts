@@ -9,7 +9,7 @@
  * - Compresses or paginates retrieved facts before context overflow
  */
 
-import { Database } from "bun:sqlite";
+import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { randomUUID } from "crypto";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { join } from "path";
@@ -217,7 +217,7 @@ export function loadCheckpoint(checkpointId: string): BudgetCheckpoint | null {
 export function listCheckpoints(swarmId?: string, limit = 10): BudgetCheckpoint[] {
   const db = getDb();
   let query = "SELECT * FROM budget_checkpoints";
-  const args: Array<string | number> = [];
+  const args: SQLQueryBindings[] = [];
   if (swarmId) { query += " WHERE swarm_id = ?"; args.push(swarmId); }
   query += " ORDER BY created_at DESC LIMIT ?"; args.push(limit);
   return (db.prepare(query).all(...args) as Array<Record<string, unknown>>).map((row) => {

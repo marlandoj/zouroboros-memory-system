@@ -17,12 +17,11 @@
  * Backward compatible with v1/v2 facts DB.
  */
 
-import { Database } from "bun:sqlite";
+import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { randomUUID, createHash } from "crypto";
 import { join } from "path";
 import { readFileSync } from "fs";
 import { computeGraphBoost, findGraphNeighbors } from "./graph-boost";
-import { supersededSet, supersedingFact, applySupersedePenalty, supersedeSuppressOn } from "./supersede";
 import { extractWikilinks, resolveWikilinkTargets, autoCorrectWikilinks, shouldExcludeFromWrapping, ENTITY_LIKE_PATTERN } from "./wikilink-utils";
 import {
   createEpisodeRecord,
@@ -35,26 +34,10 @@ import {
   upsertOpenLoop,
 } from "./continuation";
 import { generate as mcGenerate, embeddings as mcEmbeddings } from "./model-client";
-import {
-  classifyWrite,
-  findDuplicateId,
-  decodeEmbedding,
-  applyMerge,
-  DEDUP_THRESHOLD,
-  recencyFactor,
-  applyRecencyDecay,
-  RECENCY_WEIGHT,
-  p0FlagOn,
-} from "./p0-1-gate";
 
 // --- Configuration ---
 const DB_PATH = process.env.ZO_MEMORY_DB || "/home/workspace/.zo/memory/shared-facts.db";
 // Model config now handled by model-client.ts; this is kept for status display and SQL defaults
-// Vector embeddings via OpenAI text-embedding-3-small (1536-dim, matches existing fact_embeddings).
-// Honor an explicit override; otherwise default ON. Set ZO_MODEL_EMBEDDING=disabled to force FTS-only.
-if (!process.env["ZO_MODEL_EMBEDDING"]) {
-  process.env["ZO_MODEL_EMBEDDING"] = "openai:text-embedding-3-small";
-}
 const EMBEDDING_MODEL = process.env.ZO_EMBEDDING_MODEL || "text-embedding-3-small";
 
 // Decay class TTLs in seconds
@@ -157,9 +140,7 @@ async function initDb(): Promise<Database> {
       expires_at INTEGER,
       last_accessed INTEGER,
       confidence REAL DEFAULT 1.0,
-      metadata TEXT,
-      merged_count INTEGER NOT NULL DEFAULT 0,
-      gate_status TEXT NOT NULL DEFAULT 'allow'
+      metadata TEXT
     );
 
     CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
@@ -185,7 +166,6 @@ async function initDb(): Promise<Database> {
     CREATE INDEX IF NOT EXISTS idx_facts_persona ON facts(persona);
     CREATE INDEX IF NOT EXISTS idx_facts_entity ON facts(entity);
     CREATE INDEX IF NOT EXISTS idx_facts_category ON facts(category);
-    CREATE INDEX IF NOT EXISTS idx_facts_gate_status ON facts(gate_status);
   `);
 
   db.exec(`
@@ -241,8 +221,6 @@ async function initDb(): Promise<Database> {
     CREATE TABLE IF NOT EXISTS procedure_episodes (
       procedure_id TEXT NOT NULL REFERENCES procedures(id) ON DELETE CASCADE,
       episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
-      rationale TEXT,
-      outcome TEXT,
       PRIMARY KEY (procedure_id, episode_id)
     );
 
@@ -252,29 +230,8 @@ async function initDb(): Promise<Database> {
     CREATE INDEX IF NOT EXISTS idx_procedures_name ON procedures(name);
   `);
 
-  // M9 STaR: rationale + outcome columns on procedure_episodes (idempotent)
-  const peCols = db.prepare("PRAGMA table_info(procedure_episodes)").all() as Array<{ name: string }>;
-  const peNames = new Set(peCols.map(c => c.name));
-  if (!peNames.has("rationale")) {
-    db.exec("ALTER TABLE procedure_episodes ADD COLUMN rationale TEXT");
-  }
-  if (!peNames.has("outcome")) {
-    db.exec("ALTER TABLE procedure_episodes ADD COLUMN outcome TEXT");
-  }
-
-  // P0-1: dedup-merge + write-gate columns on facts (idempotent self-heal for pre-existing DBs)
-  const factCols = db.prepare("PRAGMA table_info(facts)").all() as Array<{ name: string }>;
-  const factNames = new Set(factCols.map(c => c.name));
-  if (!factNames.has("merged_count")) {
-    db.exec("ALTER TABLE facts ADD COLUMN merged_count INTEGER NOT NULL DEFAULT 0");
-  }
-  if (!factNames.has("gate_status")) {
-    db.exec("ALTER TABLE facts ADD COLUMN gate_status TEXT NOT NULL DEFAULT 'allow'");
-  }
-  db.exec("CREATE INDEX IF NOT EXISTS idx_facts_gate_status ON facts(gate_status)");
-
   ensureContinuationSchema(db);
-
+  
   dbInitialized = true;
   return db;
 }
@@ -311,9 +268,7 @@ async function runMigration(): Promise<void> {
 }
 
 // --- Embedding Service (via model-client) ---
-async function getEmbedding(text: string, skipVector = false): Promise<number[] | null> {
-  if (skipVector || process.env.BENCH_SKIP_VECTOR === "true") return null;
-  if (process.env.ZO_MODEL_EMBEDDING === "disabled") return null;
+async function getEmbedding(text: string): Promise<number[] | null> {
   try {
     const result = await mcEmbeddings(text.slice(0, 8000));
     return result.embedding.length > 0 ? result.embedding : null;
@@ -331,8 +286,7 @@ async function hydeExpand(query: string): Promise<string[]> {
       temperature: 0.3,
       maxTokens: 80,
     });
-    console.error(`[hyde-debug] ZO_MODEL_HYDE=${process.env.ZO_MODEL_HYDE || "UNSET"} model=${result?.model || "?"}`);
-        const expanded = result.content.trim();
+    const expanded = result.content.trim();
     if (expanded && expanded.length > 10) {
       return [query, expanded];
     }
@@ -369,21 +323,6 @@ async function storeWithEmbedding(
   const now = Date.now();
   const nowSec = Math.floor(now / 1000);
 
-  // P0-1 write-gate (T3): classify before doing any work. Flag-gated; off ⇒ legacy allow-always.
-  const verdict = p0FlagOn("MEMORY_WRITE_GATE")
-    ? classifyWrite({ value: entry.value, source: entry.source, confidence: entry.confidence })
-    : "allow";
-  if (verdict === "discard") {
-    try {
-      db.prepare(
-        `INSERT INTO capture_log (id, source, transcript_hash, facts_extracted, facts_skipped, contradictions, model, duration_ms)
-         VALUES (?, 'write-gate', ?, 0, 1, 0, 'write-gate', 0)`
-      ).run(randomUUID(), createHash("sha256").update(entry.value).digest("hex"));
-    } catch { /* capture_log is best-effort */ }
-    console.error(`\x1b[33m[write-gate]\x1b[0m discarded trivial/echo write for ${entry.entity}.${entry.key || "_"}`);
-    return null;
-  }
-
   const decayClass = entry.decayClass || "stable";
   const expiresAt = TTL_DEFAULTS[decayClass] ? nowSec + TTL_DEFAULTS[decayClass]! : null;
 
@@ -402,38 +341,12 @@ async function storeWithEmbedding(
     }
   }
 
-  // P0-1: generate embedding FIRST (needed for dedup-merge), then dedup, then insert.
-  const textToEmbed = entry.text || `${entry.entity} ${entry.key || ""}: ${storeValue}`;
-  const embedding = await getEmbedding(textToEmbed);
-
-  // Dedup-merge (T3): a near-identical same-(entity,persona) fact ⇒ merge instead of insert.
-  // Active when an embedding exists (OpenAI text-embedding-3-small); skipped under FTS-only.
-  if (p0FlagOn("MEMORY_DEDUP_MERGE") && embedding) {
-    const candidates = db.prepare(
-      `SELECT f.id AS id, e.embedding AS embedding
-         FROM facts f JOIN fact_embeddings e ON e.fact_id = f.id
-        WHERE f.persona = ? AND f.entity = ? AND f.gate_status != 'hold'
-          AND (f.expires_at IS NULL OR f.expires_at > ?)`
-    ).all(entry.persona, entry.entity, nowSec) as Array<{ id: string; embedding: Uint8Array }>;
-    const dupId = findDuplicateId(
-      embedding,
-      candidates.map((c) => ({ id: c.id, embedding: decodeEmbedding(c.embedding) })),
-      DEDUP_THRESHOLD,
-    );
-    if (dupId) {
-      applyMerge(db, dupId, nowSec);
-      const merged = db.prepare("SELECT * FROM facts WHERE id = ?").get(dupId) as Record<string, unknown>;
-      console.error(`\x1b[36m[dedup-merge]\x1b[0m merged into ${dupId} (merged_count=${merged.merged_count}) for ${entry.entity}.${entry.key || "_"}`);
-      return rowToEntry(merged);
-    }
-  }
-
-  // Insert fact (gate_status from the classifier: 'allow' or 'hold')
+  // Insert fact
   const metadataStr = Object.keys(storeMetadata).length > 0 ? JSON.stringify(storeMetadata) : null;
   db.prepare(`
     INSERT INTO facts (id, persona, entity, key, value, text, category, decay_class,
-                       importance, source, created_at, expires_at, last_accessed, confidence, metadata, gate_status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       importance, source, created_at, expires_at, last_accessed, confidence, metadata)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     entry.persona,
@@ -449,11 +362,13 @@ async function storeWithEmbedding(
     expiresAt,
     nowSec,
     entry.confidence,
-    metadataStr,
-    verdict
+    metadataStr
   );
 
-  // Store embedding (already generated above)
+  // Generate and store embedding
+  const textToEmbed = entry.text || `${entry.entity} ${entry.key || ""}: ${storeValue}`;
+  const embedding = await getEmbedding(textToEmbed);
+
   if (embedding) {
     db.prepare(`
       INSERT INTO fact_embeddings (fact_id, embedding, model)
@@ -463,7 +378,6 @@ async function storeWithEmbedding(
 
   // Parse wikilinks from value and create fact_links edges
   const wikilinks = extractWikilinks(storeValue);
-  let factLinksCreated = 0;
   if (wikilinks.length > 0) {
     const resolved = resolveWikilinkTargets(db, wikilinks, {
       sourcePersona: entry.persona,
@@ -473,19 +387,6 @@ async function storeWithEmbedding(
       db.prepare(
         "INSERT OR IGNORE INTO fact_links (source_id, target_id, relation, weight) VALUES (?, ?, 'wikilink', 1.0)"
       ).run(id, link.targetId);
-      factLinksCreated++;
-    }
-  }
-
-  // Same-entity fallback: if no wikilinks resolved, link to most recent same-entity peer
-  if (factLinksCreated === 0) {
-    const peer = db.prepare(
-      "SELECT id FROM facts WHERE entity = ? AND id != ? AND (expires_at IS NULL OR expires_at > ?) ORDER BY created_at DESC LIMIT 1"
-    ).get(entry.entity, id, nowSec) as any;
-    if (peer) {
-      db.prepare(
-        "INSERT OR IGNORE INTO fact_links (source_id, target_id, relation, weight) VALUES (?, ?, 'co-reference', 0.5)"
-      ).run(id, peer.id);
     }
   }
 
@@ -500,28 +401,16 @@ async function storeWithEmbedding(
   };
 }
 
-// P0-1 (T4): recency factor for a fact. created_at is ms, last_accessed is sec —
-// normalize to seconds before handing to the ACT-R base-level helper.
-function entryRecency(e: MemoryEntry): number {
-  const createdSec = (e.createdAt || 0) / 1000;
-  const lastSec = e.lastAccessed || 0;
-  return recencyFactor(createdSec, lastSec);
-}
-
 // --- Hybrid Search ---
 async function hybridSearch(
   query: string,
-  options: { persona?: string; limit?: number; useHyde?: boolean; useGraph?: boolean; skipVector?: boolean; expandSessions?: boolean; includeHeld?: boolean; includeSuperseded?: boolean } = {}
-): Promise<Array<{ entry: MemoryEntry; score: number; sources: string[]; expandedFrom?: string }>> {
+  options: { persona?: string; limit?: number; useHyde?: boolean; useGraph?: boolean } = {}
+): Promise<Array<{ entry: MemoryEntry; score: number; sources: string[] }>> {
   const db = await initDb();
-  const { persona, limit = 10, useHyde = true, useGraph = true, skipVector = false, expandSessions = false, includeHeld = false, includeSuperseded = false } = options;
+  const { persona, limit = 10, useHyde = true, useGraph = true } = options;
   const nowSec = Math.floor(Date.now() / 1000);
 
-  // P0-1 (T5): exclude gate_status='hold' from default retrieval. Opt-in includeHeld
-  // for admin/debug only. NULL/'allow' always pass (existing rows default to 'allow').
-  const holdFilter = includeHeld ? "" : "AND (f.gate_status IS NULL OR f.gate_status != 'hold')";
-
-  // PARALLEL: Run FTS + HyDE (+ embedding if enabled) simultaneously
+  // PARALLEL: Run FTS for original query + HyDE + embedding simultaneously
   const [ftsBaseResults, queryVariants, queryEmbedding] = await Promise.all([
     // FTS for original query (fast, always needed)
     (async () => {
@@ -540,7 +429,6 @@ async function hybridSearch(
         JOIN facts_fts fts ON f.rowid = fts.rowid
         WHERE facts_fts MATCH ?
           AND (f.expires_at IS NULL OR f.expires_at > ?)
-          ${holdFilter}
           ${persona ? "AND f.persona = ?" : ""}
         ORDER BY rank
         LIMIT ${limit * 2}
@@ -548,13 +436,8 @@ async function hybridSearch(
     })(),
     // HyDE expansion (slow, runs in parallel)
     useHyde ? hydeExpand(query) : Promise.resolve([query]),
-    // Query embedding (only when vector search is enabled)
-    (async () => {
-      console.error(`[embed-check] skipVector=${skipVector} calling getEmbedding`);
-      const r = skipVector ? null : await getEmbedding(query);
-      console.error(`[embed-check] getEmbedding result: ${r === null ? "NULL" : "array(" + r.length + ")"}`);
-      return r;
-    })(),
+    // Query embedding (runs in parallel)
+    getEmbedding(query),
   ]);
 
   // Collect FTS results
@@ -567,42 +450,6 @@ async function hybridSearch(
       rank: row.rank as number,
       source: `fts:${query.slice(0, 30)}`,
     });
-  }
-
-  // Session expansion: fetch adjacent turns from matched sessions
-  if (expandSessions && ftsResults.size > 0) {
-    const sessionIds = new Set<string>();
-    for (const row of ftsBaseResults) {
-      const src = (row as Record<string, unknown>).source as string | null;
-      if (src) {
-        const sessionPart = String(src).split(':')[0];
-        if (sessionPart) sessionIds.add(sessionPart);
-      }
-    }
-    if (sessionIds.size > 0) {
-      const sessionList = [...sessionIds].slice(0, 3);
-      const neighbors = db
-      .prepare(`SELECT f.*, 'expanded' as expand_src
-                FROM facts f
-                WHERE f.source LIKE ? || '%'
-                  AND f.id != ?
-                  AND (f.expires_at IS NULL OR f.expires_at > ?)
-                  ${holdFilter}
-                ORDER BY f.created_at
-                LIMIT 8`)
-      .all(...sessionList.flatMap((s) => [s + ":%", "", String(nowSec)]));
-      for (const row of neighbors) {
-        const nRow = row as Record<string, unknown>;
-        const id = nRow.id as string;
-        if (!ftsResults.has(id)) {
-          ftsResults.set(id, {
-            entry: rowToEntry(nRow),
-            rank: 999,
-            source: 'expanded',
-          });
-        }
-      }
-    }
   }
 
   // If HyDE expanded the query, run FTS for expanded variant (after parallel phase)
@@ -622,7 +469,6 @@ async function hybridSearch(
         JOIN facts_fts fts ON f.rowid = fts.rowid
         WHERE facts_fts MATCH ?
           AND (f.expires_at IS NULL OR f.expires_at > ?)
-          ${holdFilter}
           ${persona ? "AND f.persona = ?" : ""}
         ORDER BY rank
         LIMIT ${limit}
@@ -644,14 +490,13 @@ async function hybridSearch(
   // Get vector results
   const vectorResults = new Map<string, { entry: MemoryEntry; similarity: number }>();
   
-  if (queryEmbedding && !skipVector) {
+  if (queryEmbedding) {
     // Get all embeddings and compute similarity
     const embeddings = db.prepare(`
       SELECT fe.fact_id, fe.embedding
       FROM fact_embeddings fe
       JOIN facts f ON fe.fact_id = f.id
       WHERE (f.expires_at IS NULL OR f.expires_at > ?)
-        ${holdFilter}
         ${persona ? "AND f.persona = ?" : ""}
     `).all(...[nowSec, ...(persona ? [persona] : [])]) as Array<{ fact_id: string; embedding: Buffer }>;
     
@@ -728,87 +573,42 @@ async function hybridSearch(
     });
   }
 
-  // P0-1 (T4): score-level ACT-R recency. weight 0 when flag off ⇒ identical ordering.
-  const recencyW = p0FlagOn("MEMORY_RECENCY_DECAY") ? RECENCY_WEIGHT : 0;
-
-  // P1-4 (T2): candidates that something newer supersedes. Empty when flag off or
-  // includeSuperseded ⇒ identity. Single batched lookup over the candidate ids.
-  const supersededIds = (supersedeSuppressOn() && !includeSuperseded)
-    ? supersededSet(db, preBoosted.map(r => r.id))
-    : new Set<string>();
-  const taggedSources = (id: string, sources: string[]) =>
-    supersededIds.has(id) ? [...sources, "superseded"] : sources;
-
   // When --no-graph is set, skip graph boost and neighbor injection
   if (!useGraph) {
     const finalResults: Array<{ entry: MemoryEntry; score: number; sources: string[] }> = preBoosted.map(r => ({
       entry: (r as any).entry,
-      score: applySupersedePenalty(
-        applyRecencyDecay(
-          r.rrfScore * 0.7 + r.freshness * 0.2 + r.confidence * 0.1,
-          entryRecency(r.entry),
-          recencyW,
-        ),
-        supersededIds.has(r.id),
-        includeSuperseded,
-      ),
-      sources: taggedSources(r.id, r.sources),
+      score: r.rrfScore * 0.7 + r.freshness * 0.2 + r.confidence * 0.1,
+      sources: r.sources,
     }));
     finalResults.sort((a, b) => b.score - a.score);
     return finalResults.slice(0, limit);
   }
 
-  // Apply graph boost (reweights composite scores when links exist).
-  // P1-4 (T3): pass supersededIds so a stale fact is never AMPLIFIED.
-  const boosted = computeGraphBoost(db, preBoosted, supersededIds);
+  // Apply graph boost (reweights composite scores when links exist)
+  const boosted = computeGraphBoost(db, preBoosted);
 
-  // Inject graph-discovered neighbors (facts linked to top results but not in current set).
-  // P1-4 (T3): skip injecting superseded facts; surface their superseding fact instead.
+  // Inject graph-discovered neighbors (facts linked to top results but not in current set)
   const topIds = boosted
     .sort((a, b) => b.composite - a.composite)
     .slice(0, 3)
     .map(r => r.id);
   const existingIds = new Set(boosted.map(r => r.id));
-  const neighbors = findGraphNeighbors(db, topIds, existingIds, 2, supersededIds);
+  const neighbors = findGraphNeighbors(db, topIds, existingIds, 2);
 
   const finalResults: Array<{ entry: MemoryEntry; score: number; sources: string[] }> = boosted.map(r => ({
-    entry: (r as any).entry,
-    score: applySupersedePenalty(
-      applyRecencyDecay(r.composite, entryRecency((r as any).entry), recencyW),
-      supersededIds.has(r.id),
-      includeSuperseded,
-    ),
-    sources: taggedSources(r.id, r.graphBoost > 0 ? [...r.sources, "graph"] : r.sources),
+    entry: r.entry,
+    score: r.composite,
+    sources: r.graphBoost > 0 ? [...r.sources, "graph"] : r.sources,
   }));
 
   // Add injected neighbors with a graph-only score
   for (const neighbor of neighbors) {
     const fact = db.prepare("SELECT * FROM facts WHERE id = ?").get(neighbor.factId) as Record<string, unknown>;
     if (fact) {
-      const neighborEntry = rowToEntry(fact);
       finalResults.push({
-        entry: neighborEntry,
-        score: applyRecencyDecay(neighbor.weight * 0.15, entryRecency(neighborEntry), recencyW), // Graph-only score
+        entry: rowToEntry(fact),
+        score: neighbor.weight * 0.15, // Graph-only score
         sources: [`graph:${neighbor.relation}`],
-      });
-    }
-  }
-
-  // P1-4 (T3): surface the "current" fact when a top result is superseded and the
-  // replacement isn't already present (the Unblocked "current decision is answerable" payoff).
-  if (supersededIds.size > 0) {
-    const present = new Set(finalResults.map(r => r.entry.id));
-    for (const staleId of supersededIds) {
-      const newerId = supersedingFact(db, staleId);
-      if (!newerId || present.has(newerId)) continue;
-      const fact = db.prepare("SELECT * FROM facts WHERE id = ?").get(newerId) as Record<string, unknown>;
-      if (!fact) continue;
-      const newerEntry = rowToEntry(fact);
-      present.add(newerId);
-      finalResults.push({
-        entry: newerEntry,
-        score: applyRecencyDecay(0.2, entryRecency(newerEntry), recencyW),
-        sources: ["graph:supersedes"],
       });
     }
   }
@@ -832,7 +632,7 @@ async function ftsSearch(query: string, options: { persona?: string; limit?: num
 
   if (!safeQuery) return [];
 
-  const params: Array<string | number> = [safeQuery, nowSec];
+  const params: SQLQueryBindings[] = [safeQuery, nowSec];
   let entityFilter = "";
   if (persona) { entityFilter += " AND f.persona = ?"; params.push(persona); }
   if (entity) { entityFilter += " AND f.entity = ?"; params.push(entity); }
@@ -906,16 +706,10 @@ async function backfillEmbeddings(batchSize: number = 50): Promise<{ processed: 
     const embedding = await getEmbedding(text);
     
     if (embedding) {
-      const factId = typeof row.id === "string" ? row.id : null;
-      if (!factId) {
-        failed++;
-        process.stdout.write("x");
-        continue;
-      }
       db.prepare(`
         INSERT INTO fact_embeddings (fact_id, embedding, model)
         VALUES (?, ?, ?)
-      `).run(factId, Buffer.from(new Float32Array(embedding).buffer), EMBEDDING_MODEL);
+      `).run(row.id as string, Buffer.from(new Float32Array(embedding).buffer), EMBEDDING_MODEL);
       processed++;
       process.stdout.write(".");
     } else {
@@ -1074,7 +868,7 @@ function parseRelativeTime(input: string): number {
 async function findEpisodes(query: TemporalQuery): Promise<Episode[]> {
   const db = await initDb();
   const conditions: string[] = [];
-  const params: Array<string | number> = [];
+  const params: SQLQueryBindings[] = [];
   
   if (query.since) {
     conditions.push("e.happened_at >= ?");
@@ -1277,31 +1071,24 @@ async function evolveProcedure(procedureName: string): Promise<Procedure | null>
 
   console.log(`Evolving "${procedureName}" v${current.version} using ${allFailures.length} failure episodes...`);
 
-  // STaR (Zelikman 2022): rationale-first prompt — chain-of-thought before steps.
-  const failureSummaries = allFailures.map(f => `- ${f.summary as string}`).join("\n");
+  // Use Ollama to suggest improvements
+  const failureSummaries = allFailures.map(f => (f.summary as string)).join("\n- ");
   const currentStepsJson = JSON.stringify(current.steps, null, 2);
 
   try {
     const result = await mcGenerate({
-      prompt: `You are optimizing a multi-step workflow procedure. First reason step-by-step about WHY recent failures occurred, then propose improved steps.
+      prompt: `You are optimizing a multi-step workflow procedure. Given the current steps and recent failures, suggest an improved version.
 
 Current procedure "${procedureName}" v${current.version}:
 ${currentStepsJson}
 
-Recent failures (${allFailures.length}):
-${failureSummaries}
+Recent failures:
+- ${failureSummaries}
 
 Success rate: ${current.successCount}/${current.successCount + current.failureCount}
 
-Output a JSON object with this exact shape:
-{
-  "rationale": "A 2-4 sentence chain-of-thought explaining the failure pattern and how the new steps address it.",
-  "steps": [
-    { "executor": "string", "taskPattern": "string", "timeoutSeconds": number, "fallbackExecutor": "string?", "notes": "string?" }
-  ]
-}
-
-Keep the same general structure but adjust executors, timeouts, or add fallbacks based on the failure pattern you identified.`,
+Output ONLY a valid JSON array of improved steps. Each step has: executor (string), taskPattern (string), timeoutSeconds (number), fallbackExecutor (string, optional), notes (string, optional).
+Keep the same general structure but adjust executors, timeouts, or add fallbacks based on failure patterns.`,
       workload: "extraction",
       model: process.env.ZO_EVOLUTION_MODEL,
       temperature: 0.3,
@@ -1309,20 +1096,13 @@ Keep the same general structure but adjust executors, timeouts, or add fallbacks
       json: true,
     });
 
-    const text = (result.content || "").trim();
+    const text = result.content.trim();
 
-    // Extract JSON object (model may wrap in fences despite json:true)
-    let jsonStr = text;
-    const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (fenceMatch) jsonStr = fenceMatch[1].trim();
-    const objStart = jsonStr.indexOf("{");
-    const objEnd = jsonStr.lastIndexOf("}");
-    if (objStart < 0 || objEnd <= objStart) throw new Error("No JSON object in evolution response");
-    jsonStr = jsonStr.slice(objStart, objEnd + 1);
+    // Parse JSON from response
+    const jsonMatch = text.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) throw new Error("No JSON array found in response");
 
-    const parsed = JSON.parse(jsonStr) as { rationale?: string; steps?: ProcedureStep[] };
-    const rationale = String(parsed.rationale || "").trim();
-    const newSteps = parsed.steps;
+    const newSteps = JSON.parse(jsonMatch[0]) as ProcedureStep[];
     if (!Array.isArray(newSteps) || newSteps.length === 0) throw new Error("Empty steps array");
 
     // Validate steps
@@ -1342,28 +1122,10 @@ Keep the same general structure but adjust executors, timeouts, or add fallbacks
       evolvedFrom: current.id,
     });
 
-    // Persist STaR rationale on every failure episode used as input.
-    if (rationale) {
-      const upsertStmt = db.prepare(
-        `UPDATE procedure_episodes SET rationale = ?, outcome = 'pending'
-         WHERE procedure_id = ? AND episode_id = ?`
-      );
-      const insertStmt = db.prepare(
-        `INSERT OR IGNORE INTO procedure_episodes (procedure_id, episode_id, rationale, outcome)
-         VALUES (?, ?, ?, 'pending')`
-      );
-      for (const ep of allFailures) {
-        const epId = ep.id as string;
-        upsertStmt.run(rationale, current.id, epId);
-        insertStmt.run(current.id, epId, rationale);
-      }
-    }
-
     console.log(
       `Evolved to v${evolved.version} with ${evolved.steps.length} steps. ` +
       `⚠️  Unvalidated — run at least ${MIN_RUNS_FOR_EVOLUTION} times before relying on this version.`
     );
-    if (rationale) console.log(`  Rationale: ${rationale.slice(0, 200)}${rationale.length > 200 ? "…" : ""}`);
     return evolved;
   } catch (err) {
     console.error(`Evolution failed: ${err}`);
@@ -1624,7 +1386,7 @@ Procedures options:
   --steps <json>       Steps as JSON array or path to JSON file (required for --create)
   --version <n>        Version number (default: 1)
   --show <name>        Show procedure details
-  --evolve <name>      Evolve a procedure via LLM analysis
+  --evolve <name>      Evolve a procedure via Ollama analysis
   --auto <pattern>     Auto-create procedure from successful episodes matching entity pattern
   --feedback <name>    Record feedback (requires --success or --failure)
   --min-success <n>    Min successful episodes for --auto (default: 2)
@@ -1656,7 +1418,6 @@ async function main() {
   await initDb();
   
   const args = process.argv.slice(2);
-  console.error("[args] argv[2:]=" + JSON.stringify(args));
   const command = args[0];
   
   if (!command || command === "help" || command === "--help") {
@@ -1671,13 +1432,9 @@ async function main() {
     if (args[i].startsWith("--")) {
       if (args[i] === "--no-hyde") {
         flags.hyde = "false";
-      } else if (args[i] === "--skip-vector") {
-        flags["skip-vector"] = "true";
-      } else if (args[i] === "--expand-sessions") {
-        flags["expand-sessions"] = "true";
       } else if (args[i] === "--no-graph") {
         flags.graph = "false";
-      } else if (args[i] === "--create" || args[i] === "--list" || args[i] === "--success" || args[i] === "--failure" || args[i] === "--dry-run" || args[i] === "--json" || args[i] === "--no-embed" || args[i] === "--expand-sessions" || args[i] === "--skip-vector" || args[i] === "--include-superseded") {
+      } else if (args[i] === "--create" || args[i] === "--list" || args[i] === "--success" || args[i] === "--failure" || args[i] === "--dry-run" || args[i] === "--json" || args[i] === "--no-embed") {
         flags[args[i].slice(2)] = "true";
       } else {
         flags[args[i].slice(2)] = args[i + 1] || "";
@@ -1857,7 +1614,6 @@ async function main() {
     }
     
     case "hybrid": {
-      console.error("[flags] skip-vector=" + String(flags["skip-vector"]) + " expand-sessions=" + String(flags["expand-sessions"]));
       const query = positional[0];
       if (!query) {
         console.error("Error: search query required");
@@ -1871,18 +1627,15 @@ async function main() {
         limit: parseInt(flags.limit) || 6,
         useHyde: flags.hyde !== "false",
         useGraph: flags.graph !== "false",
-        skipVector: !!flags["skip-vector"],
-        expandSessions: !!flags["expand-sessions"],
-        includeSuperseded: flags["include-superseded"] === "true" || !!flags["include-superseded"],
       });
       if (flags.json === "true") {
-        console.log(JSON.stringify(results.map(({ entry, score, sources, expandedFrom }) => ({
+        console.log(JSON.stringify(results.map(({ entry, score, sources }) => ({
           id: entry.id, persona: entry.persona, entity: entry.entity,
           key: entry.key, value: entry.value, text: entry.text,
           category: entry.category, decayClass: entry.decayClass,
           importance: entry.importance, source: entry.source,
           createdAt: entry.createdAt, expiresAt: entry.expiresAt,
-          confidence: entry.confidence, score, sources, expandedFrom,
+          confidence: entry.confidence, score, sources,
         }))));
       } else {
         console.log(`Found ${results.length} results:\n`);
