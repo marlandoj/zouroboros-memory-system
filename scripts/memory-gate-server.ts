@@ -26,7 +26,8 @@ import { ensureBackendDb, getBackendStatus } from "./ensure-backend.ts";
 import { existsSync, readFileSync } from "fs";
 import { generateTraceId, writeTraceId } from "./trace.js";
 import { createHash, timingSafeEqual } from "crypto";
-import { formatInlineFtsResult, retrieveInlineFtsCandidates } from "./inline-fts.ts";
+import { formatInlineFtsResult, getSearchDb, retrieveInlineFtsCandidates, type InlineFtsCandidate } from "./inline-fts.ts";
+import { formatFusedResult, fuseFtsAndGraph, graphGateMode, retrieveGraphCandidates } from "./graph-gate.ts";
 import { buildInlineEvaluationTrace, type EvalRetrievalMethod } from "./eval-retrieval-trace.ts";
 import { extractKeywordsFromMessage } from "./retrieval-query.ts";
 import {
@@ -212,6 +213,10 @@ function inlineFtsSearch(
     if (result.quarantined > 0) {
       console.error(`[inline-fts] quarantined ${result.quarantined} low-confidence auto-captured fact(s) below floor ${CONFIDENCE_FLOOR}`);
     }
+    if (graphGateMode() === "primary") {
+      const fused = fuseWithGraph(query, dbPath, limit, result.candidates);
+      if (fused) return fused;
+    }
     return {
       output: formatInlineFtsResult(result),
       candidates: result.candidates.map((candidate) => ({
@@ -233,7 +238,36 @@ function inlineFtsSearch(
   }
 }
 
-// --- Memory search (in-process FTS fast path + subprocess hybrid fallback) ---
+// GraphRAG primary arm: runs on every in-process search (not just when FTS is
+// empty) and is RRF-fused with the FTS list. Returns null on graph failure so the
+// caller serves FTS-only output unchanged.
+function fuseWithGraph(
+  query: string,
+  dbPath: string,
+  limit: number,
+  fts: InlineFtsCandidate[],
+): RetrievalSearchResult | null {
+  try {
+    const graph = retrieveGraphCandidates(getSearchDb(dbPath), {
+      query,
+      seedIds: fts.filter((c) => !c.superseded).map((c) => String(c.id)),
+      limit,
+      confidenceFloor: CONFIDENCE_FLOOR,
+    });
+    const fused = fuseFtsAndGraph(fts, graph.candidates, limit);
+    return {
+      output: formatFusedResult(fused),
+      candidates: fused.map((c) => ({ id: c.id, rank: c.rank, score: c.rrf })),
+      candidateIdsAvailable: true,
+      retrievalPath: "inline_fts",
+    };
+  } catch (err) {
+    console.error(`[gate-graph] error (serving FTS only): ${err}`);
+    return null;
+  }
+}
+
+// --- Memory search (in-process FTS + graph primary path, subprocess hybrid fallback) ---
 
 async function searchMemory(
   keywords: string[],
@@ -249,7 +283,7 @@ async function searchMemory(
     return inlineResult;
   }
 
-  // Fallback for empty FTS or when hybrid is requested: subprocess with HyDE+graph
+  // Fallback when FTS and graph are both empty: subprocess with HyDE+vectors+graph boost
   if (preferExact) {
     return { ...inlineResult, output: inlineResult.output || "No results" };
   }
@@ -652,6 +686,7 @@ const server = Bun.serve({
         gate_provider_ready: gateProviderReady,
         port: PORT,
         prospective_collection: getProspectiveCollectionStatus(),
+        graph_mode: graphGateMode(),
         backends,
       });
     }
