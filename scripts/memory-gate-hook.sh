@@ -42,9 +42,7 @@ if [[ "$EXIT_CODE" == "0" && -n "$OUTPUT" ]]; then
 fi
 
 # Async feedback capture — fire-and-forget, never blocks the prompt
-FEEDBACK_INGEST=/home/workspace/Skills/zo-memory-system/scripts/feedback-ingest.sh
-if [[ -f "$FEEDBACK_INGEST" ]]; then
-  printf '%s' "$INPUT" | setsid bash "$FEEDBACK_INGEST" >> /dev/shm/feedback-ingest.log 2>&1 &
-fi
+printf '%s' "$INPUT" | setsid bash /home/workspace/Skills/zo-memory-system/scripts/feedback-ingest.sh \
+  >> /dev/shm/feedback-ingest.log 2>&1 &
 
 exit 0

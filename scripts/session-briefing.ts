@@ -509,9 +509,9 @@ if (import.meta.main) {
     process.exit(0);
   }
 
-  const persona = String(positionals[0]);
-  const maxTokensValue = values["max-tokens"];
-  const maxTokens = typeof maxTokensValue === "string" ? parseInt(maxTokensValue) : DEFAULT_MAX_TOKENS;
+  const persona = positionals[0];
+  const maxTokensArg = values["max-tokens"];
+  const maxTokens = typeof maxTokensArg === "string" ? parseInt(maxTokensArg) : DEFAULT_MAX_TOKENS;
   const domain = typeof values.domain === "string" ? values.domain : undefined;
 
   const result = await generateBriefing(persona, domain, maxTokens);

@@ -73,11 +73,7 @@ export interface GraphNeighbor {
  * @param results - Scored results from RRF fusion (pre-composite)
  * @returns Results with graphBoost and reweighted composite scores
  */
-export function computeGraphBoost(
-  db: Database,
-  results: ScoredResult[],
-  supersededIds: Set<string> = new Set(),
-): BoostedResult[] {
+export function computeGraphBoost<T extends ScoredResult>(db: Database, results: T[]): BoostedResult<T>[] {
   if (results.length === 0) return [];
 
   const resultIds = new Set(results.map(r => r.id));
