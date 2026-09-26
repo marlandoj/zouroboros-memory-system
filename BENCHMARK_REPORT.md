@@ -2,7 +2,11 @@
 
 **Date**: 2026-04-07 12:48:43 UTC
 **Database**: 25 synthetic facts, seeded graph links
-**Ollama Models**: nomic-embed-text, qwen2.5:1.5b, qwen2.5:7b
+**Models at run time**: nomic-embed-text (local), qwen2.5:1.5b, qwen2.5:7b (local).
+> Historical record. The local Ollama lane was retired in 2026; generation now runs
+> hosted through `scripts/model-client.ts` (default `openai:gpt-4o-mini`) and embeddings
+> through `openai:text-embedding-3-small`. Do not read these numbers as the current
+> configuration — re-run `bun scripts/benchmark-v2-v3.ts` to regenerate.
 
 ## Graph-Boosted Search
 
