@@ -23,7 +23,7 @@ import { findGraphNeighborsDeep } from "./graph-boost.ts";
 const DEFAULT_DB_PATH = process.env.ZO_MEMORY_DB || "/home/workspace/.zo/memory/shared-facts.db";
 const DEFAULT_MAX_TOKENS = 500;
 
-interface SessionBriefing {
+export interface SessionBriefing {
   persona: string;
   domain: string | null;
   briefing: string;
@@ -373,6 +373,11 @@ Respond with the action only, no preamble.`;
 }
 
 // ── Main Pipeline ──────────────────────────────────────────────────────────
+
+export type BriefingGenerator = (
+  persona: string,
+  domain?: string,
+) => Promise<SessionBriefing>;
 
 export async function generateBriefing(
   persona: string,

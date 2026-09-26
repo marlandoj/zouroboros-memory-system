@@ -1,7 +1,7 @@
 ---
 name: zo-memory-system
-description: Hybrid SQLite + Vector persona memory system for Zo Computer. Episodic memory with temporal queries, graph-boosted search, BFS path finding, knowledge gap analysis, auto-capture pipeline, and per-workload model routing. Default generation workloads use OpenAI `gpt-4o-mini`; embeddings default to Ollama `nomic-embed-text`.
-compatibility: Created for Zo Computer. Requires Bun, `OPENAI_API_KEY` for default generation workloads, and Ollama for default local embeddings.
+description: Hybrid SQLite + Vector persona memory system for Zo Computer. Episodic memory with temporal queries, graph-boosted search, BFS path finding, knowledge gap analysis, auto-capture pipeline, and per-workload model routing. Embeddings use hosted OpenAI `text-embedding-3-small`; generation workloads resolve per-workload through `scripts/model-client.ts`.
+compatibility: Created for Zo Computer. Requires Bun and `OPENAI_API_KEY` for hosted embeddings and default generation workloads. No local model runtime is installed or required.
 metadata:
   author: marlandoj.zo.computer
   updated: 2026-03-29
@@ -47,7 +47,7 @@ Give your Zo personas persistent memory with semantic understanding, graph intel
 - **Scheduled capture agent** — Daily agent that runs conversation-capture and emails a maintenance report
 - **Contradiction detection** — New facts that conflict with existing ones create supersession links
 - **5-tier adaptive decay** — Automatic promotion/demotion based on access patterns
-- **Local embeddings** — nomic-embed-text (768d) via Ollama (no API costs)
+- **Hosted embeddings** — `text-embedding-3-small` (1536-dim) via the OpenAI embeddings API
 - **Per-persona memory files** — Critical facts always loaded with the persona
 - **Shared memory database** — Cross-persona facts with vector index
 - **Associative routing** — Graph links between related facts (link/unlink/show commands)
@@ -67,13 +67,8 @@ Give your Zo personas persistent memory with semantic understanding, graph intel
 ## Prerequisites
 
 ```bash
-# Default generation workloads
+# Hosted embeddings and default generation workloads
 export OPENAI_API_KEY="your_api_key_here"
-
-# Optional local embeddings
-curl -fsSL https://ollama.com/install.sh | sh
-ollama pull nomic-embed-text
-ollama serve &
 ```
 
 ### Model Selection
@@ -81,7 +76,7 @@ ollama serve &
 | Model | Purpose | Size | Why |
 |-------|---------|------|-----|
 | `openai:gpt-4o-mini` | Gate, HyDE, capture, briefing, summarization | OpenAI | Current default generation path across memory workloads |
-| `ollama:nomic-embed-text` | Vector embeddings | Ollama | Local embeddings with no per-call API cost |
+| `openai:text-embedding-3-small` | Vector embeddings (1536-dim) | OpenAI | Hosted embedding path; no local runtime required |
 
 **Override policy:** generation workloads resolve through `scripts/model-client.ts` and can be changed via workload-specific env vars.
 
@@ -185,8 +180,8 @@ bun scripts/memory.ts lookup --entity "user" --key "name"
 # View statistics (shows embeddings count, model config)
 bun scripts/memory.ts stats
 
-# Check Ollama health and model availability
-bun scripts/memory.ts health
+# View model routing and embedding coverage
+bun scripts/memory.ts stats
 
 # Backfill embeddings for all facts
 bun scripts/memory.ts index
@@ -672,7 +667,7 @@ bun scripts/memory-gate.ts "update the supplier scorecard"
 | Code | Meaning |
 |------|---------|
 | 0 | Memory results found and printed |
-| 1 | Error (Ollama down, parse failure) |
+| 1 | Error (API failure, parse failure) |
 | 2 | No memory needed (greeting, general knowledge, self-contained request) |
 | 3 | Memory needed but no results found |
 
@@ -691,10 +686,9 @@ Run: bun /home/workspace/Skills/zo-memory-system/scripts/memory-gate.ts "<messag
 
 ```bash
 export ZO_GATE_MODEL="openai:gpt-4o-mini"  # Default gate model
-export OLLAMA_URL="http://localhost:11434"
 ```
 
-The gate uses `keep_alive: "24h"` to keep the model loaded in memory. A daily scheduled agent should ping the model to prevent cold starts (~35-58s on first load vs ~5-7s warm).
+Hosted API models need no `keep_alive` and no cold-start pinger. Local Ollama serving was removed in 2026: the gate, HyDE, and embeddings all call hosted providers.
 
 ### Performance in multi-agent swarms
 
@@ -769,8 +763,7 @@ Query → ┌──────────────────────�
 Environment variables (optional):
 
 ```bash
-export OLLAMA_URL="http://localhost:11434"      # Default embedding endpoint
-export ZO_EMBEDDING_MODEL="ollama:nomic-embed-text"    # Default
+export ZO_EMBEDDING_MODEL="openai:text-embedding-3-small"    # Default embedding model
 export ZO_HYDE_MODEL="openai:gpt-4o-mini"       # Default
 export ZO_HYDE_DEFAULT="true"                   # Default: use HyDE
 export ZO_CAPTURE_MODEL="openai:gpt-4o-mini"    # Default: auto-capture model

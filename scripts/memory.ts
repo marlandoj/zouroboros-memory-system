@@ -297,6 +297,7 @@ async function hydeExpand(query: string): Promise<string[]> {
 }
 
 function cosineSimilarity(a: number[], b: number[]): number {
+  if (!a || !b || a.length === 0 || b.length === 0 || a.length !== b.length) return 0;
   let dot = 0;
   let normA = 0;
   let normB = 0;
@@ -305,6 +306,7 @@ function cosineSimilarity(a: number[], b: number[]): number {
     normA += a[i] * a[i];
     normB += b[i] * b[i];
   }
+  if (normA === 0 || normB === 0) return 0;
   return dot / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
@@ -358,7 +360,7 @@ async function storeWithEmbedding(
     decayClass,
     entry.importance,
     entry.source,
-    now,
+    nowSec,
     expiresAt,
     nowSec,
     entry.confidence,
@@ -500,7 +502,12 @@ async function hybridSearch(
         ${persona ? "AND f.persona = ?" : ""}
     `).all(...[nowSec, ...(persona ? [persona] : [])]) as Array<{ fact_id: string; embedding: Buffer }>;
     
+    let dimSkipped = 0;
     for (const row of embeddings) {
+      if (row.embedding.length !== queryEmbedding.length * 4) {
+        dimSkipped++;
+        continue;
+      }
       const embedding = Array.from(new Float32Array(row.embedding.buffer, row.embedding.byteOffset, row.embedding.length / 4));
       const similarity = cosineSimilarity(queryEmbedding, embedding);
       

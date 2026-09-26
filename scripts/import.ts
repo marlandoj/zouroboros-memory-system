@@ -65,7 +65,7 @@ async function storeFact(db: Database, fact: ImportedFact): Promise<boolean> {
       INSERT INTO facts (id, persona, entity, key, value, text, category, decay_class,
                          importance, source, created_at, expires_at, last_accessed, confidence)
       VALUES (?, 'shared', ?, ?, ?, ?, ?, 'stable', 1.0, ?, ?, ?, ?, 1.0)
-    `).run(id, fact.entity, fact.key, fact.value, fact.text, fact.category, fact.source, now, expiresAt, nowSec);
+    `).run(id, fact.entity, fact.key, fact.value, fact.text, fact.category, fact.source, nowSec, expiresAt, nowSec);
 
     // Generate embedding
     const embedding = await getEmbedding(fact.text);

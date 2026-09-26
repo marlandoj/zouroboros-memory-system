@@ -191,6 +191,7 @@ const deterministicBriefingGenerator = async (persona: string) => ({
   active_items: [],
   recent_episodes: [],
   inherited_facts: [],
+  graph_facts: [],
   vault_context: [],
   generated_at: 1,
   latency_ms: 0,

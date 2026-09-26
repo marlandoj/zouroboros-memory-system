@@ -30,7 +30,7 @@ This skill gives your AI personas long-term memory that persists across conversa
 - **Memory Gate** -- A routed model workload that decides whether each message needs stored memory, filtering 40-60% of messages and saving tokens
 - **5-Tier Adaptive Decay** -- Facts automatically promote or demote based on how often they're accessed
 - **Swarm Integration** -- Token-optimized memory for multi-agent workflows via [zouroboros-swarm-orchestrator](https://github.com/marlandoj/zouroboros-swarm-orchestrator), with 6-signal composite routing, auto-episode creation, and cognitive profiles
-- **Default Routing** -- Generation workloads default to OpenAI `gpt-4o-mini`; embeddings remain local on Ollama `nomic-embed-text`
+- **Default Routing** -- Embeddings use OpenAI `text-embedding-3-small`; generation workloads resolve per-workload through `scripts/model-client.ts` and can be overridden by env
 
 ---
 
@@ -104,20 +104,16 @@ bun scripts/add-persona.sh "ops-manager" "Operations leader"
 
 ## Prerequisites
 
-The current default routing uses OpenAI for generation workloads and Ollama for local embeddings.
+Routing uses hosted providers. Embeddings are OpenAI `text-embedding-3-small`; generation workloads resolve through `scripts/model-client.ts` with per-workload env overrides. No local model runtime is installed or required.
 
 ```bash
 export OPENAI_API_KEY="your_api_key_here"
-
-# Optional local embeddings
-curl -fsSL https://ollama.com/install.sh | sh
-ollama pull nomic-embed-text
 ```
 
 | Model | Purpose | Size | Required? |
 |-------|---------|------|-----------|
 | openai:gpt-4o-mini | Gate, HyDE, auto-capture, summaries | API | Yes (default generation path) |
-| ollama:nomic-embed-text | Vector embeddings | 274 MB | Yes for local embeddings |
+| openai:text-embedding-3-small | Vector embeddings (1536-dim) | API | Yes (default embedding path) |
 
 ---
 
@@ -386,8 +382,7 @@ zouroboros-memory-system/
 Environment variables (all optional, sensible defaults):
 
 ```bash
-export OLLAMA_URL="http://localhost:11434"
-export ZO_EMBEDDING_MODEL="ollama:nomic-embed-text"
+export ZO_EMBEDDING_MODEL="openai:text-embedding-3-small"   # Default (1536d)
 export ZO_HYDE_MODEL="openai:gpt-4o-mini"
 export ZO_GATE_MODEL="openai:gpt-4o-mini"
 export ZO_CAPTURE_MODEL="openai:gpt-4o-mini"

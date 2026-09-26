@@ -12,6 +12,7 @@
  */
 
 import { Database } from "bun:sqlite";
+import { supersededSet, supersedeSuppressOn } from "./supersede";
 
 /** Cache whether vault_links table exists to avoid repeated schema queries. */
 let _vaultLinksExists: boolean | null = null;
@@ -97,6 +98,10 @@ export function computeGraphBoost<T extends ScoredResult>(db: Database, results:
       composite: r.rrfScore * 0.7 + r.freshness * 0.2 + r.confidence * 0.1,
     }));
   }
+
+  // P1-4: a fact that a LIVE fact supersedes must never be amplified by graph
+  // links. Gated on MEMORY_SUPERSEDE_SUPPRESS (default ON) so it stays revertable.
+  const supersededIds = supersedeSuppressOn() ? supersededSet(db, ids) : new Set<string>();
 
   // Build adjacency: for each result id, accumulate boost from linked results
   const boostMap = new Map<string, number>();

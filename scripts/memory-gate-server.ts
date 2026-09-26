@@ -24,6 +24,8 @@ import { logGateDecision, logRetrieval } from "./scorecard.ts";
 import { ensureBackendDb, getBackendStatus } from "./ensure-backend.ts";
 import { existsSync, readFileSync } from "fs";
 import { synthesizeAnswer, generateFeedbackFacts } from "./mimir-synthesize.ts";
+import { generateTraceId, writeTraceId } from "./trace.ts";
+import { buildMimirLessonContext } from "./mimir-academy-rag.ts";
 import { createHash, timingSafeEqual } from "crypto";
 
 const MEMORY_SCRIPT = "/home/workspace/Skills/zo-memory-system/scripts/memory.ts";
@@ -180,6 +182,8 @@ function inlineFtsSearch(query: string, dbPath: string, limit: number, includeSu
     const ftsQ = terms.map(w => `${w}*`).join(" OR ");
     // P0-1 (T5): exclude gate_status='hold' rows from default retrieval. NULL/'allow'
     // pass (existing rows default to 'allow'); held rows are kept out of the agent's view.
+    // expires_at mirrors the `hybrid` subprocess path (memory.ts): NULL/permanent rows
+    // pass; a past TTL means the fact is decayed and must not reach the agent.
     const rows = db.query(`
       SELECT f.entity, f.key, f.value, f.decay_class, f.category, f.source, f.confidence,
              bm25(facts_fts) as score
@@ -187,6 +191,7 @@ function inlineFtsSearch(query: string, dbPath: string, limit: number, includeSu
       JOIN facts f ON f.rowid = facts_fts.rowid
       WHERE facts_fts MATCH ?
         AND (f.gate_status IS NULL OR f.gate_status != 'hold')
+        AND (f.expires_at IS NULL OR f.expires_at > unixepoch())
       ORDER BY score LIMIT ?
     `).all(ftsQ, limit) as any[];
     if (rows.length === 0) return "";

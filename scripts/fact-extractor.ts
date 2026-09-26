@@ -265,7 +265,7 @@ export async function extractAndStoreFacts(
     `).run(
       id, persona, fact.entity, fact.key, fact.value, text2,
       fact.category, fact.decay_class, 1.0, `fact-extractor:${options.source}`,
-      now, expiresAt, nowSec, fact.confidence,
+      nowSec, expiresAt, nowSec, fact.confidence,
       JSON.stringify({ source_quote: fact.source_quote })
     );
 
