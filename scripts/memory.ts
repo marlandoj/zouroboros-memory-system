@@ -1078,7 +1078,7 @@ async function evolveProcedure(procedureName: string): Promise<Procedure | null>
 
   console.log(`Evolving "${procedureName}" v${current.version} using ${allFailures.length} failure episodes...`);
 
-  // Use Ollama to suggest improvements
+  // Use the routed generation model to suggest improvements
   const failureSummaries = allFailures.map(f => (f.summary as string)).join("\n- ");
   const currentStepsJson = JSON.stringify(current.steps, null, 2);
 
@@ -1393,7 +1393,7 @@ Procedures options:
   --steps <json>       Steps as JSON array or path to JSON file (required for --create)
   --version <n>        Version number (default: 1)
   --show <name>        Show procedure details
-  --evolve <name>      Evolve a procedure via Ollama analysis
+  --evolve <name>      Evolve a procedure via model-client analysis
   --auto <pattern>     Auto-create procedure from successful episodes matching entity pattern
   --feedback <name>    Record feedback (requires --success or --failure)
   --min-success <n>    Min successful episodes for --auto (default: 2)
