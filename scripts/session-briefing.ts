@@ -227,7 +227,7 @@ function getGraphLinkedFacts(persona: string, domain?: string, limit = 8, dbPath
   }
 }
 
-// ── Step 5: Ollama Synthesis ───────────────────────────────────────────────
+// ── Step 5: Model-Client Synthesis (gpt-4o-mini) ──────────────────────────
 
 async function synthesize(
   persona: string,

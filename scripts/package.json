@@ -8,7 +8,7 @@
     "bun-types": "^1.3.14",
     "typescript": "^5.9.3"
   },
-  "description": "Hybrid SQLite + Vector persona memory with episodic/procedural memory, cognitive profiles, MCP server, import pipeline, and Ollama-powered evolution for Zo Computer",
+  "description": "GraphRAG + FTS5 persona memory with episodic/procedural memory, cognitive profiles, MCP server, import pipeline, and model-client-routed inference (OpenAI/OpenRouter, no local model provider) for Zo Computer",
   "scripts": {
     "memory": "bun memory.ts",
     "demo": "bun demo.ts"

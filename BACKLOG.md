@@ -53,7 +53,7 @@ Based on research into MemGPT's tiered-memory eviction (core/working/peripheral)
 **Files:** `scripts/episode-summarizer.ts`
 
 **Implemented:**
-- `compressEpisodes()` — Ollama-powered compression of episode sequences
+- `compressEpisodes()` — model-client-routed compression of episode sequences (gpt-4o-mini / OpenRouter)
 - `generateSummary()` — structured JSON extraction (summary + keyDecisions + keyOutcomes)
 - `shouldSummarize()` — threshold check for FIFO eviction trigger
 - `getCompressedEpisode()` / `listCompressedEpisodes()` — compressed episode CRUD
@@ -72,7 +72,7 @@ Based on research into MemGPT's tiered-memory eviction (core/working/peripheral)
 **Implemented:**
 - `multiHopRetrieve()` — iterative BFS retrieval with configurable maxHops and early stopping at 0.75 confidence
 - `assessConfidence()` — relevance × entity diversity scoring for early stopping
-- `refineQueryForNextHop()` — Ollama-powered query refinement between hops
+- `refineQueryForNextHop()` — model-client-routed query refinement between hops (gpt-4o-mini / OpenRouter)
 - `semanticSearch()` + `getNeighbors()` — FTS + graph traversal per hop
 - `multiHopRetrieve()` returns `{ hopsTaken, confidence, allResults[], summary, reasoning }`
 - CLI: `retrieve`, `benchmark` (vs single-shot), `explain`
@@ -165,7 +165,7 @@ The 5-tier system provides finer granularity for different use cases (swarm task
 **Files:** `scripts/conflict-resolver.ts`
 
 **Implemented:**
-- `isContradiction()` — numeric, temporal, and Ollama-powered semantic contradiction detection
+- `isContradiction()` — numeric, temporal, and model-client-routed semantic contradiction detection (gpt-4o-mini / OpenRouter)
 - `detectNewConflict()` — automatic conflict detection during fact storage
 - `resolveConflict()` — supersede (soft-delete loser), flag, merge workflows
 - `findEntityConflicts()` / `findEntityConflicts()` — query conflicts by fact or entity

@@ -4,7 +4,7 @@
 
 ---
 
-> Give your Zo Computer personas persistent memory with semantic understanding, a knowledge graph, and automatic fact extraction. Generation defaults route through OpenAI; embeddings remain local by default.
+> Give your Zo Computer personas persistent memory with semantic understanding, a knowledge graph, and automatic fact extraction. Generation defaults route through OpenAI; embeddings use OpenAI `text-embedding-3-small` by default. No local model runtime is installed or required.
 >
 > Part of the [Zouroboros](https://github.com/marlandoj) ecosystem — self-improving AI development tools for Zo Computer.
 
@@ -47,7 +47,7 @@ Set up the memory system for my personas.
 Use the zo-memory-system skill.
 ```
 
-Zo will install the database, configure provider routing, and set up local embeddings if desired. You can then say things like:
+Zo will install the database, configure provider routing, and set up the embedding path if desired. You can then say things like:
 
 - *"Remember that our brand voice is concise, confident, and no fluff"*
 - *"What did we decide about the database for the FFB project?"*

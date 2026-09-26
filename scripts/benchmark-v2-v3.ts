@@ -8,25 +8,26 @@
  *   3. Auto-capture extraction quality
  *
  * Uses a temporary SQLite database with synthetic but realistic facts.
- * Requires OpenAI for default generation workloads and Ollama for local embeddings.
+ * Requires OpenAI for every generation workload and for embeddings; both resolve
+ * through model-client. The local Ollama embedding lane was retired in 2026.
  *
- * Usage: bun benchmark-v2-v3.ts [--skip-ollama]
+ * Usage: bun benchmark-v2-v3.ts [--skip-embeddings]
  */
 
 import { Database } from "bun:sqlite";
 import { randomUUID, createHash } from "crypto";
 import { unlinkSync, existsSync, writeFileSync } from "fs";
 import { computeGraphBoost, findGraphNeighbors } from "./graph-boost";
-import { generate, modelHealthCheck } from "./model-client";
+import { generate, modelHealthCheck, embeddings } from "./model-client";
 
 // --- Configuration ---
 const TEST_DB_PATH = "/dev/shm/zo-memory-benchmark.db";
-const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434";
-const EMBEDDING_MODEL = "nomic-embed-text";
+const EMBEDDING_MODEL = process.env.ZO_EMBEDDING_MODEL || "openai:text-embedding-3-small";
 const HYDE_MODEL = process.env.ZO_HYDE_MODEL || "openai:gpt-4o-mini";
 const GATE_MODEL = process.env.ZO_GATE_MODEL || "openai:gpt-4o-mini";
 const CAPTURE_MODEL = process.env.ZO_CAPTURE_MODEL || "openai:gpt-4o-mini";
-const SKIP_OLLAMA = process.argv.includes("--skip-ollama");
+// --skip-ollama is accepted as a legacy alias for --skip-embeddings.
+const SKIP_EMBEDDINGS = process.argv.includes("--skip-embeddings") || process.argv.includes("--skip-ollama");
 
 // --- Timing Utility ---
 function timer(): () => number {
@@ -146,7 +147,7 @@ function seedDatabase(db: Database): SeedFact[] {
     { id: "", entity: "decision.ffb-payments", key: "choice", value: "Using Stripe Connect for payment processing with webhook integration", category: "decision", decay: "permanent" },
     { id: "", entity: "project.ffb-site", key: "seo-audit", value: "Completed SEO audit showing missing meta descriptions on 12 product pages", category: "fact", decay: "active" },
     // Memory system cluster (should be linked)
-    { id: "", entity: "system.memory", key: "version", value: "Hybrid SQLite plus vector search with nomic-embed-text embeddings", category: "fact", decay: "stable" },
+    { id: "", entity: "system.memory", key: "version", value: "GraphRAG knowledge graph plus FTS5 as the primary retrieval path, with graph-boosted ranking", category: "fact", decay: "stable" },
     { id: "", entity: "system.memory", key: "database", value: "SQLite with FTS5 and WAL mode at .zo/memory/shared-facts.db", category: "fact", decay: "permanent" },
     { id: "", entity: "decision.memory-cli", key: "choice", value: "Use memory.ts as canonical CLI, supports store search hybrid index stats", category: "decision", decay: "permanent" },
     { id: "", entity: "system.memory", key: "gate", value: "Model-routed memory gate filters 40-60% of messages saving tokens", category: "fact", decay: "stable" },
@@ -158,7 +159,7 @@ function seedDatabase(db: Database): SeedFact[] {
     // Infrastructure cluster
     { id: "", entity: "system.zo", key: "backups", value: "Offsite backups via rclone to Google Drive weekly on Sundays", category: "fact", decay: "stable" },
     { id: "", entity: "system.zo", key: "database", value: "MariaDB running locally on 127.0.0.1:3306", category: "fact", decay: "stable" },
-    { id: "", entity: "system.zo", key: "model-routing", value: "OpenAI handles gate, HyDE, and capture workloads while Ollama hosts local nomic-embed-text embeddings", category: "fact", decay: "stable" },
+    { id: "", entity: "system.zo", key: "model-routing", value: "OpenAI handles the gate, HyDE, extraction, capture, briefing and embedding workloads; no local model runtime is used", category: "fact", decay: "stable" },
     // Financial
     { id: "", entity: "portfolio", key: "broker", value: "Alpaca Markets paper trading account for strategy testing", category: "fact", decay: "stable" },
     { id: "", entity: "portfolio", key: "strategy", value: "Dollar cost averaging into VOO and QQQ with 5% single position limit", category: "decision", decay: "stable" },
@@ -251,16 +252,10 @@ function seedGraphLinks(db: Database, facts: SeedFact[]): number {
 
 // --- Embedding Helper ---
 async function getEmbedding(text: string): Promise<number[] | null> {
+  if (SKIP_EMBEDDINGS) return null;
   try {
-    const resp = await fetch(`${OLLAMA_URL}/api/embeddings`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: EMBEDDING_MODEL, prompt: text.slice(0, 8000) }),
-      signal: AbortSignal.timeout(15000),
-    });
-    if (!resp.ok) return null;
-    const data = await resp.json() as { embedding?: number[] };
-    return data.embedding ?? null;
+    const result = await embeddings(text.slice(0, 8000));
+    return result.embedding ?? null;
   } catch { return null; }
 }
 
@@ -812,8 +807,8 @@ async function benchmarkLatency(db: Database) {
   console.log("BENCHMARK 4: End-to-End Search Latency");
   console.log("=".repeat(60));
 
-  if (SKIP_OLLAMA) {
-    console.log("  Skipped (--skip-ollama: embeddings required)");
+  if (SKIP_EMBEDDINGS) {
+    console.log("  Skipped (--skip-embeddings: embeddings required)");
     return;
   }
 
@@ -929,7 +924,7 @@ function generateMarkdownReport(): string {
   let md = `# zo-memory-system Benchmark: v2.0 vs v3.0\n\n`;
   md += `**Date**: ${timestamp} UTC\n`;
   md += `**Database**: ${results.length > 0 ? "25 synthetic facts, seeded graph links" : "N/A"}\n`;
-  md += `**Configured Models**: ${SKIP_OLLAMA ? `generation=${GATE_MODEL}/${CAPTURE_MODEL}, embeddings skipped` : `embeddings=${EMBEDDING_MODEL}, generation=${HYDE_MODEL}/${GATE_MODEL}/${CAPTURE_MODEL}`}\n\n`;
+  md += `**Configured Models**: ${SKIP_EMBEDDINGS ? `generation=${GATE_MODEL}/${CAPTURE_MODEL}, embeddings skipped` : `embeddings=${EMBEDDING_MODEL}, generation=${HYDE_MODEL}/${GATE_MODEL}/${CAPTURE_MODEL}`}\n\n`;
 
   const categories = ["graph", "gate", "capture", "search"] as const;
   const labels: Record<string, string> = {
@@ -992,31 +987,18 @@ async function main() {
   console.log(`  ✓ ${GATE_MODEL}`);
   console.log(`  ✓ ${CAPTURE_MODEL}`);
 
-  // Check Ollama availability for embeddings
-  if (!SKIP_OLLAMA) {
+  // Check embedding-model availability through model-client
+  if (!SKIP_EMBEDDINGS) {
     try {
-      const resp = await fetch(`${OLLAMA_URL}/api/tags`, { signal: AbortSignal.timeout(5000) });
-      if (!resp.ok) throw new Error(`Status ${resp.status}`);
-      const data = await resp.json() as { models?: Array<{ name: string }> };
-      const models = data.models?.map((m: any) => m.name) || [];
-      console.log(`\nOllama: ✓ (${models.length} models loaded)`);
-
-      const required = [EMBEDDING_MODEL];
-      for (const m of required) {
-        const found = models.some((name: string) => name === m || name.startsWith(m + ":"));
-        console.log(`  ${found ? "✓" : "✗"} ${m}`);
-        if (!found) {
-          console.error(`Missing required model: ${m}. Run: ollama pull ${m}`);
-          process.exit(1);
-        }
-      }
+      const probe = await embeddings("embedding health probe");
+      console.log(`\nEmbeddings: ✓ (${probe.embedding?.length ?? 0}d via ${probe.provider}/${probe.model})`);
     } catch (err) {
-      console.error(`Ollama not reachable at ${OLLAMA_URL}: ${err}`);
-      console.log("Run with --skip-ollama to skip embedding-dependent benchmarks.");
+      console.error(`Embedding model not reachable: ${err}`);
+      console.log("Set ZO_EMBEDDING_MODEL, or run with --skip-embeddings to skip embedding-dependent benchmarks.");
       process.exit(1);
     }
   } else {
-    console.log("\nOllama embeddings: Skipped (--skip-ollama flag)");
+    console.log("\nEmbeddings: Skipped (--skip-embeddings flag)");
   }
 
   // Setup
@@ -1028,7 +1010,7 @@ async function main() {
   const linkCount = seedGraphLinks(db, facts);
   console.log(`  Created ${linkCount} graph links`);
 
-  if (!SKIP_OLLAMA) {
+  if (!SKIP_EMBEDDINGS) {
     console.log("  Generating embeddings (this may take a moment)...");
     const embCount = await seedEmbeddings(db);
     console.log(`  Generated ${embCount} embeddings`);
