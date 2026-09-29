@@ -150,7 +150,7 @@ function getInheritedFacts(persona: string, domain?: string, limit = 3, dbPath?:
   }
 }
 
-// ── Step 5: Ollama Synthesis ───────────────────────────────────────────────
+// ── Step 5: Synthesis ────────────────────────────────────────────────────
 
 async function synthesize(
   persona: string,

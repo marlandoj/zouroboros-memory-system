@@ -15,7 +15,7 @@ Supermemory's key feature is extracting facts from every AI turn automatically. 
 
 **Why post-conversation instead of per-turn:**
 - Full conversation context gives better extraction quality
-- 1 Ollama call per conversation vs. N calls per turn
+- 1 hosted model call per conversation vs. N calls per turn
 - Natural batch for contradiction detection
 - Swarm runs produce a single transcript to capture once
 
@@ -27,7 +27,7 @@ Every auto-captured fact is tagged with `source: "auto-capture:{label}"` for aud
 
 ## What We Didn't Take
 
-- **Cloud API**: Supermemory is a hosted service. We run locally with Ollama.
+- **Cloud API**: Supermemory is a hosted service. We also call hosted providers.
 - **Per-turn extraction**: Too much overhead for our use case. Post-conversation is better.
 - **Automatic forgetting**: Supermemory auto-deletes contradicted facts. We soft-deprecate (confidence *= 0.5) + create `supersedes` links, preserving history.
 - **Embedding-based dedup**: Supermemory uses cosine similarity > 0.9 for semantic dedup. We use exact hash matching for now (simpler, no false positives). Could add semantic dedup later.

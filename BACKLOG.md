@@ -53,7 +53,7 @@ Based on research into MemGPT's tiered-memory eviction (core/working/peripheral)
 **Files:** `scripts/episode-summarizer.ts`
 
 **Implemented:**
-- `compressEpisodes()` — Ollama-powered compression of episode sequences
+- `compressEpisodes()` — model-client-backed compression of episode sequences
 - `generateSummary()` — structured JSON extraction (summary + keyDecisions + keyOutcomes)
 - `shouldSummarize()` — threshold check for FIFO eviction trigger
 - `getCompressedEpisode()` / `listCompressedEpisodes()` — compressed episode CRUD
@@ -72,7 +72,7 @@ Based on research into MemGPT's tiered-memory eviction (core/working/peripheral)
 **Implemented:**
 - `multiHopRetrieve()` — iterative BFS retrieval with configurable maxHops and early stopping at 0.75 confidence
 - `assessConfidence()` — relevance × entity diversity scoring for early stopping
-- `refineQueryForNextHop()` — Ollama-powered query refinement between hops
+- `refineQueryForNextHop()` — model-client-backed query refinement between hops
 - `semanticSearch()` + `getNeighbors()` — FTS + graph traversal per hop
 - `multiHopRetrieve()` returns `{ hopsTaken, confidence, allResults[], summary, reasoning }`
 - CLI: `retrieve`, `benchmark` (vs single-shot), `explain`
@@ -165,7 +165,7 @@ The 5-tier system provides finer granularity for different use cases (swarm task
 **Files:** `scripts/conflict-resolver.ts`
 
 **Implemented:**
-- `isContradiction()` — numeric, temporal, and Ollama-powered semantic contradiction detection
+- `isContradiction()` — numeric, temporal, and model-client-backed semantic contradiction detection
 - `detectNewConflict()` — automatic conflict detection during fact storage
 - `resolveConflict()` — supersede (soft-delete loser), flag, merge workflows
 - `findEntityConflicts()` / `findEntityConflicts()` — query conflicts by fact or entity
@@ -241,7 +241,7 @@ Current scale (~1k facts) doesn't justify complexity. Revisit at 10k+ facts.
 **Files:** `scripts/embedding-benchmark.ts`
 
 **Implemented:**
-- `benchmarkModel()` — measures embed latency, throughput (dims/s), and recall@5 for any Ollama embedding model
+- `benchmarkModel()` — measures embed latency, throughput (dims/s), and recall@5 for any local embedding model (retired: targets Ollama, not the production path)
 - `compareModels()` — runs all configured models and ranks by speed/quality
 - `MODELS` registry: nomic-embed-text (768d), mxbai-embed-large (1024d), all-MiniLM-L6-v2 (384d)
 - `set-default` — writes `ZO_EMBEDDING_MODEL` to `~/.zo/memory/.env` for persistent config
@@ -302,7 +302,7 @@ Current scale (~1k facts) doesn't justify complexity. Revisit at 10k+ facts.
 
 ### Future
 - **⬜ MEM-201** Vector Database Migration (when scale requires)
-- **⬜ MEM-204** RAG Expansion Script Unification — Migrate 5 scripts in `Projects/zouroboros-rag-expansion/scripts/` from hardcoded Ollama calls to `model-client.ts` import (currently embeddings-only, low priority)
+- **⬜ MEM-204** RAG Expansion Script Unification — Migrate 5 scripts in `Projects/zouroboros-rag-expansion/scripts/` from hardcoded provider calls to `model-client.ts` import (currently embeddings-only, low priority)
 
 ---
 
