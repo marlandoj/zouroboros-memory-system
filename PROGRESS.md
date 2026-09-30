@@ -2,9 +2,10 @@
 
 status: complete
 watchdog: off
-started: 2026-09-28
-completed: 2026-09-28
+started: 2026-09-29
+completed: 2026-09-29
 scope: `marlandoj/zouroboros-memory-system` @ `main` (21eee06)
+branch: `fix/drop-stale-ollama-references`
 
 ## Objective
 
