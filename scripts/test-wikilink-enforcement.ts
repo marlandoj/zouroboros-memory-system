@@ -9,6 +9,7 @@
  */
 
 import { Database } from "bun:sqlite";
+import { readFileSync } from "node:fs";
 import {
   shouldExcludeFromWrapping,
   autoCorrectWikilinks,
@@ -247,6 +248,131 @@ console.log("\n=== Auto-Correction: Original Value Preserved ===\n");
 // ============================================================
 // SUMMARY
 // ============================================================
+
+// ============================================================
+// REGRESSION: issue #34 — toolMemorySearch FTS arm
+//
+// Two bugs made the MCP memory_search FTS arm return nothing for
+// ordinary multi-word queries. They are reproduced here against the
+// real schema.sql, because the bug lives in the SQL, not in JS.
+// ============================================================
+
+const SEARCH_QUERY = `
+SELECT f.*
+FROM facts_fts fts
+JOIN facts f ON f.rowid = fts.rowid
+WHERE fts.facts_fts MATCH ?
+ORDER BY fts.rank
+LIMIT 10
+`;
+
+function createFtsFixture(): Database {
+  const fdb = new Database(":memory:");
+  fdb.exec(readFileSync(new URL("./schema.sql", import.meta.url).pathname, "utf8"));
+  const now = Date.now();
+  fdb.prepare(
+    `INSERT INTO facts (id, persona, entity, key, value, text, created_at)
+     VALUES (?, 'shared', ?, ?, ?, ?, ?)`,
+  ).run(
+    "fixture-uuid-1",
+    "zouroboros.harnesses",
+    "harnesses",
+    "eight harnesses",
+    "eight harnesses are supported",
+    now,
+  );
+  fdb.prepare(
+    `INSERT INTO facts (id, persona, entity, key, value, text, created_at)
+     VALUES (?, 'shared', ?, ?, ?, ?, ?)`,
+  ).run(
+    "fixture-uuid-2",
+    "zouroboros.filing",
+    "filing",
+    "Cognito employer id",
+    "Cognito employer id is 1234",
+    now,
+  );
+  return fdb;
+}
+
+{
+  const fdb = createFtsFixture();
+
+  // Bug 1: the old join compared a TEXT uuid (facts.id) to an integer
+  // (facts_fts.rowid). SQLite does not drop those rows -- the predicate
+  // silently fails to restrict anything, so the arm degrades into a cross
+  // join that returns the SAME facts for every query. Asserted here so a
+  // future refactor cannot reintroduce it.
+  const staleArm = (q: string) =>
+    fdb
+      .prepare(
+        `SELECT f.* FROM facts_fts fts JOIN facts f ON f.id = fts.rowid
+         WHERE fts.facts_fts MATCH ? ORDER BY fts.rank LIMIT 10`,
+      )
+      .all(q) as Array<Record<string, unknown>>;
+  const staleOne = staleArm('"harnesses"').map((r) => r.id);
+  const staleTwo = staleArm('"Cognito"').map((r) => r.id);
+  assert(
+    JSON.stringify(staleOne) === JSON.stringify(staleTwo),
+    "regression guard: the pre-fix f.id = fts.rowid join is a cross join, not a filter",
+    `both queries returned ${JSON.stringify(staleOne)}`,
+  );
+
+  // The correct join must return only the row each query actually matches.
+  const correctArm = (q: string) =>
+    fdb
+      .prepare(SEARCH_QUERY)
+      .all(q)
+      .map((r) => (r as Record<string, unknown>).id);
+  assert(
+    correctArm('"harnesses"').length === 1 &&
+      correctArm('"Cognito"').length === 1 &&
+      correctArm('"harnesses"')[0] !== correctArm('"Cognito"')[0],
+    "the f.rowid = fts.rowid join filters per query, unlike the stale one",
+  );
+
+  // Bug 2: FTS5 treats a bare multi-word MATCH as an adjacency phrase.
+  const phraseQuery = fdb.prepare(SEARCH_QUERY).all("agent harnesses") as Array<unknown>;
+  assert(
+    phraseQuery.length === 0,
+    "regression guard: a bare multi-word MATCH is still a phrase query",
+    `expected 0 rows, got ${phraseQuery.length}`,
+  );
+
+  // The fix: tokenize to quoted OR-terms and join on rowid.
+  const tokenized = "agent harnesses"
+    .replace(/['"]/g, "")
+    .split(/\s+/)
+    .filter((w) => w.length > 1)
+    .map((w) => `"${w}"`)
+    .join(" OR ");
+  const fixed = fdb.prepare(SEARCH_QUERY).all(tokenized) as Array<Record<string, unknown>>;
+  assert(
+    fixed.length === 1,
+    "toolMemorySearch FTS arm finds the fact for a non-adjacent multi-word query",
+    `expected 1 row, got ${fixed.length}`,
+  );
+  assert(
+    fixed[0]?.id === "fixture-uuid-1",
+    "the row returned is the matching fact, joined on rowid",
+    `id=${String(fixed[0]?.id)}`,
+  );
+
+  // Tokenization must not emit an empty MATCH when the query is all stopwords.
+  const empty = ["a", "'", '"']
+    .join(" ")
+    .replace(/['"]/g, "")
+    .split(/\s+/)
+    .filter((w) => w.length > 1)
+    .map((w) => `"${w}"`)
+    .join(" OR ");
+  assert(
+    empty === "",
+    "tokenizing a stopword-only query yields an empty FTS expression, not a MATCH error",
+  );
+
+  fdb.close();
+}
 
 db.close();
 

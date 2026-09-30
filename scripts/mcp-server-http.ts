@@ -120,15 +120,29 @@ async function toolMemorySearch(args: {
   ftsWhere.push("(f.expires_at IS NULL OR f.expires_at > ?)");
   ftsParams.push(nowSec);
 
-  const ftsResults = db.prepare(`
+  // FTS5 reads a bare multi-word string as an adjacency phrase query, so
+  // "agent harnesses" only ever matches when the words sit next to each other.
+  // Tokenize to quoted OR-terms, the same way hybridSearch() in memory.ts does.
+  // facts_fts is an external-content table on content_rowid='rowid', so the
+  // join must be f.rowid = fts.rowid -- f.id is a TEXT uuid and never matches.
+  const ftsQuery = query
+    .replace(/['"]/g, "")
+    .split(/\s+/)
+    .filter((w) => w.length > 1)
+    .map((w) => `"${w}"`)
+    .join(" OR ");
+
+  const ftsResults = ftsQuery
+    ? (db.prepare(`
     SELECT f.*, fts.rank
     FROM facts_fts fts
-    JOIN facts f ON f.id = fts.rowid
+    JOIN facts f ON f.rowid = fts.rowid
     WHERE fts.facts_fts MATCH ?
       ${ftsWhere.length ? "AND " + ftsWhere.join(" AND ") : ""}
     ORDER BY fts.rank
     LIMIT ?
-  `).all(query, ...ftsParams, limit * 2) as Array<Record<string, unknown>>;
+  `).all(ftsQuery, ...ftsParams, limit * 2) as Array<Record<string, unknown>>)
+    : [];
 
   const queryEmbedding = await getEmbedding(query);
   let vectorResults: Array<{ id: string; score: number }> = [];
