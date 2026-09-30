@@ -8,16 +8,33 @@
  *   bun embedding-benchmark.ts benchmark --model mxbai-embed-large
  *   bun embedding-benchmark.ts compare
  *   bun embedding-benchmark.ts set-default --model <name>
+ *
+ * RETIRED 2026-09-26: this benchmark targets a local Ollama server and the 768d
+ * nomic-embed-text default that is no longer part of the retrieval path. Production
+ * embeddings resolve through model-client (openai:text-embedding-3-small, 1536d).
+ * The script exits unless ZO_ALLOW_RETIRED_EMBED_BENCH=1 is set, so it cannot report
+ * latency/recall for a model that is not in the live path.
  */
 
 import { Database } from "bun:sqlite";
 import { existsSync, readFileSync } from "fs";
 
+if (!process.env.ZO_ALLOW_RETIRED_EMBED_BENCH) {
+  console.error(
+    "embedding-benchmark.ts is retired: it benchmarks local Ollama models that are no longer\n" +
+    "part of the retrieval path. Production embeddings resolve through model-client\n" +
+    "(openai:text-embedding-3-small, 1536d) via ZO_MODEL_EMBEDDING.\n" +
+    "Port this benchmark to the hosted embedding endpoint before using it again\n" +
+    "(set ZO_ALLOW_RETIRED_EMBED_BENCH=1 to run the stale Ollama path anyway).",
+  );
+  process.exit(1);
+}
+
 const DB_PATH = process.env.ZO_MEMORY_DB || "/home/workspace/.zo/memory/shared-facts.db";
 const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434";
 
 const MODELS = {
-  "nomic-embed-text": { dims: 768, size_mb: 274, description: "Current default — general purpose, 768d" },
+  "nomic-embed-text": { dims: 768, size_mb: 274, description: "Retired local Ollama model — general purpose, 768d (not the production embedding path)" },
   "mxbai-embed-large": { dims: 1024, size_mb: 1300, description: "Better for long documents, 1024d" },
   "all-MiniLM-L6-v2": { dims: 384, size_mb: 80, description: "Fast, lower quality, 384d" },
 };

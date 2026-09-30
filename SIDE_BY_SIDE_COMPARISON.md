@@ -93,7 +93,7 @@ Result: Dynamic, context-aware decay
 #### Original
 - Stored in SQLite: `procedures` table
 - Version tracked: `evolved_from` links
-- Ollama-powered evolution
+- Model-routed evolution via `model-client`
 
 #### Enhanced
 - SQLite + **Git vault**: `.zo/memory/procedures/`
@@ -105,7 +105,7 @@ Result: Dynamic, context-aware decay
 |---------|----------|----------|
 | SQLite storage | ✅ | ✅ |
 | Version tracking | ✅ | ✅ |
-| Ollama evolution | ✅ | ✅ |
+| Model-routed evolution | ✅ | ✅ |
 | Markdown export | ❌ | ✅ |
 | Git history | ❌ | ✅ |
 | Human-readable | ❌ | ✅ |
@@ -153,7 +153,7 @@ Result: Dynamic, context-aware decay
 |-----------|---------|
 | Hybrid search | ~37-43ms |
 | Graph-boost overhead | +0.16–0.85ms |
-| Memory gate | +3,806ms (includes Ollama) |
+| Memory gate | +3,806ms (includes local model call latency) |
 | E2E query | ~36-50ms |
 
 #### Enhanced (new measurements)

@@ -2,7 +2,8 @@
 
 **Date**: 2026-04-07 12:48:43 UTC
 **Database**: 25 synthetic facts, seeded graph links
-**Ollama Models**: nomic-embed-text, qwen2.5:1.5b, qwen2.5:7b
+**Generation Models** (via `model-client`): qwen2.5:1.5b, qwen2.5:7b  
+**Embedding Model at the time of this run** (superseded): nomic-embed-text, 768d, served by a local Ollama instance. Production embeddings now resolve to `openai:text-embedding-3-small` (1536d) via `model-client`. Numbers below are the original run and are not re-baselined.
 
 ## Graph-Boosted Search
 

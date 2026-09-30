@@ -107,7 +107,7 @@ export function getExtractorDb(): Database {
   return db;
 }
 
-// --- Ollama ---
+// --- Hosted generation ---
 
 const EXTRACTION_PROMPT = `You are a fact extractor. Given a conversation or document, extract structured, reusable facts.
 
