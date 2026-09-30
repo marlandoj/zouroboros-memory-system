@@ -47,7 +47,7 @@ Give your Zo personas persistent memory with semantic understanding, graph intel
 - **Scheduled capture agent** — Daily agent that runs conversation-capture and emails a maintenance report
 - **Contradiction detection** — New facts that conflict with existing ones create supersession links
 - **5-tier adaptive decay** — Automatic promotion/demotion based on access patterns
-- **Hosted embeddings** — `text-embedding-3-small` (1536-dim) via the OpenAI embeddings API
+- **Hosted embeddings** — text-embedding-3-small (1536-dim) via the OpenAI embeddings API (no local runtime required)
 - **Per-persona memory files** — Critical facts always loaded with the persona
 - **Shared memory database** — Cross-persona facts with vector index
 - **Associative routing** — Graph links between related facts (link/unlink/show commands)
@@ -177,10 +177,7 @@ bun scripts/memory.ts lookup --entity "user" --key "name"
 
 ### Maintenance
 ```bash
-# View statistics (shows embeddings count, model config)
-bun scripts/memory.ts stats
-
-# View model routing and embedding coverage
+# View statistics (embeddings count, model config, fact counts)
 bun scripts/memory.ts stats
 
 # Backfill embeddings for all facts
@@ -688,7 +685,8 @@ Run: bun /home/workspace/Skills/zo-memory-system/scripts/memory-gate.ts "<messag
 export ZO_GATE_MODEL="openai:gpt-4o-mini"  # Default gate model
 ```
 
-Hosted API models need no `keep_alive` and no cold-start pinger. Local Ollama serving was removed in 2026: the gate, HyDE, and embeddings all call hosted providers.
+Hosted API models need no `keep_alive` and no cold-start pinger. Local Ollama serving was
+removed in 2026: the gate, HyDE, and embeddings all call hosted providers.
 
 ### Performance in multi-agent swarms
 
@@ -763,7 +761,7 @@ Query → ┌──────────────────────�
 Environment variables (optional):
 
 ```bash
-export ZO_EMBEDDING_MODEL="openai:text-embedding-3-small"    # Default embedding model
+export ZO_EMBEDDING_MODEL="openai:text-embedding-3-small"   # Default (1536d)
 export ZO_HYDE_MODEL="openai:gpt-4o-mini"       # Default
 export ZO_HYDE_DEFAULT="true"                   # Default: use HyDE
 export ZO_CAPTURE_MODEL="openai:gpt-4o-mini"    # Default: auto-capture model

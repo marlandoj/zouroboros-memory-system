@@ -3,10 +3,6 @@
 **Date:** March 25, 2026  
 **Comparison:** Original v3.3.1 vs. Enhanced (Post-Synergy)
 
-> Historical record from March 2026. Rows mentioning Ollama describe the system as it stood
-> then; the local Ollama lane was retired in 2026 and procedure evolution now runs hosted
-> through `scripts/model-client.ts`.
-
 ---
 
 ## Executive Summary
@@ -97,7 +93,7 @@ Result: Dynamic, context-aware decay
 #### Original
 - Stored in SQLite: `procedures` table
 - Version tracked: `evolved_from` links
-- Model-powered evolution (local Ollama at the time; hosted via model-client now)
+- Model-routed evolution via `model-client`
 
 #### Enhanced
 - SQLite + **Git vault**: `.zo/memory/procedures/`
@@ -109,7 +105,7 @@ Result: Dynamic, context-aware decay
 |---------|----------|----------|
 | SQLite storage | ✅ | ✅ |
 | Version tracking | ✅ | ✅ |
-| Model-powered evolution | ✅ | ✅ |
+| Model-routed evolution | ✅ | ✅ |
 | Markdown export | ❌ | ✅ |
 | Git history | ❌ | ✅ |
 | Human-readable | ❌ | ✅ |
@@ -157,7 +153,7 @@ Result: Dynamic, context-aware decay
 |-----------|---------|
 | Hybrid search | ~37-43ms |
 | Graph-boost overhead | +0.16–0.85ms |
-| Memory gate | +3,806ms (includes local model inference) |
+| Memory gate | +3,806ms (includes local model call latency) |
 | E2E query | ~36-50ms |
 
 #### Enhanced (new measurements)

@@ -53,7 +53,7 @@ Based on research into MemGPT's tiered-memory eviction (core/working/peripheral)
 **Files:** `scripts/episode-summarizer.ts`
 
 **Implemented:**
-- `compressEpisodes()` — model-client-routed compression of episode sequences (gpt-4o-mini / OpenRouter)
+- `compressEpisodes()` — model-client-backed compression of episode sequences
 - `generateSummary()` — structured JSON extraction (summary + keyDecisions + keyOutcomes)
 - `shouldSummarize()` — threshold check for FIFO eviction trigger
 - `getCompressedEpisode()` / `listCompressedEpisodes()` — compressed episode CRUD
@@ -72,7 +72,7 @@ Based on research into MemGPT's tiered-memory eviction (core/working/peripheral)
 **Implemented:**
 - `multiHopRetrieve()` — iterative BFS retrieval with configurable maxHops and early stopping at 0.75 confidence
 - `assessConfidence()` — relevance × entity diversity scoring for early stopping
-- `refineQueryForNextHop()` — model-client-routed query refinement between hops (gpt-4o-mini / OpenRouter)
+- `refineQueryForNextHop()` — model-client-backed query refinement between hops
 - `semanticSearch()` + `getNeighbors()` — FTS + graph traversal per hop
 - `multiHopRetrieve()` returns `{ hopsTaken, confidence, allResults[], summary, reasoning }`
 - CLI: `retrieve`, `benchmark` (vs single-shot), `explain`
@@ -165,7 +165,7 @@ The 5-tier system provides finer granularity for different use cases (swarm task
 **Files:** `scripts/conflict-resolver.ts`
 
 **Implemented:**
-- `isContradiction()` — numeric, temporal, and model-client-routed semantic contradiction detection (gpt-4o-mini / OpenRouter)
+- `isContradiction()` — numeric, temporal, and model-client-backed semantic contradiction detection
 - `detectNewConflict()` — automatic conflict detection during fact storage
 - `resolveConflict()` — supersede (soft-delete loser), flag, merge workflows
 - `findEntityConflicts()` / `findEntityConflicts()` — query conflicts by fact or entity
@@ -234,25 +234,19 @@ Current scale (~1k facts) doesn't justify complexity. Revisit at 10k+ facts.
 ---
 
 ### ✅ [MEM-202] Embedding Model Selection
-**Status:** ⚠️ Done 2026-03-29, then retired 2026-09-26 (the Ollama embedding lane it
-benchmarked is no longer in the retrieval path)
+**Status:** ✅ Done 2026-03-29
 **Priority:** P2 (Medium)
 **Effort:** Low (1 day)
 **Tags:** `performance`, `embeddings`
 **Files:** `scripts/embedding-benchmark.ts`
 
-**Implemented (as of 2026-03-29):**
-- `benchmarkModel()` — measured embed latency, throughput (dims/s), and recall@5 against a
-  local Ollama server
-- `compareModels()` — ran all configured models and ranked by speed/quality
+**Implemented:**
+- `benchmarkModel()` — measures embed latency, throughput (dims/s), and recall@5 for any local embedding model (retired: targets Ollama, not the production path)
+- `compareModels()` — runs all configured models and ranks by speed/quality
 - `MODELS` registry: nomic-embed-text (768d), mxbai-embed-large (1024d), all-MiniLM-L6-v2 (384d)
-- `set-default` — wrote `ZO_EMBEDDING_MODEL` to `~/.zo/memory/.env` for persistent config
-- Ground truth: used actual DB FTS queries as a relevance proxy
+- `set-default` — writes `ZO_EMBEDDING_MODEL` to `~/.zo/memory/.env` for persistent config
+- Ground truth: uses actual DB FTS queries as relevance proxy for benchmarking
 - CLI: `compare`, `benchmark --model <name>`, `set-default --model <name>`
-
-**Retired:** embeddings now resolve through `model-client.ts` (`openai:text-embedding-3-small`,
-1536d). The script exits with an explanation unless `ZO_ALLOW_RETIRED_EMBED_BENCH=1` is set.
-Reopening this item means porting the benchmark to the hosted endpoint, not restoring Ollama.
 
 ---
 
@@ -308,7 +302,7 @@ Reopening this item means porting the benchmark to the hosted endpoint, not rest
 
 ### Future
 - **⬜ MEM-201** Vector Database Migration (when scale requires)
-- **⬜ MEM-204** RAG Expansion Script Unification — ⚠️ stale: `Projects/zouroboros-rag-expansion/scripts/` does not exist on this host (only `data/` and `seeds/` remain), so there is nothing to migrate there. If the RAG expansion scripts are revived, route them through `model-client.ts` at authoring time; do not resurrect the Ollama calls.
+- **⬜ MEM-204** RAG Expansion Script Unification — Migrate 5 scripts in `Projects/zouroboros-rag-expansion/scripts/` from hardcoded provider calls to `model-client.ts` import (currently embeddings-only, low priority)
 
 ---
 

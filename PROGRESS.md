@@ -1,30 +1,62 @@
-# [MEM] Index Vault — scheduled run status
+# PROGRESS — Drop stale Ollama references
 
-status: in_progress
-watchdog: paused
-automation-id: c67f7d00-0a3c-435f-8b11-3d5f6b7a8c9d
-started: 2026-07-22 15:02 UTC
+status: complete
+watchdog: off
+started: 2026-09-29
+completed: 2026-09-29
+scope: `marlandoj/zouroboros-memory-system` @ `main` (21eee06)
+branch: `fix/drop-stale-ollama-references`
 
-## Checklist
+## Objective
 
-- [x] Resilience begin (recovered prior interrupted run, revision 1)
-- [ ] Preflight-paths
-- [ ] memory.ts stats (pre)
-- [ ] vault-index.ts index
-- [ ] memory.ts stats (post)
-- [ ] finish
+`main` advertised Ollama `nomic-embed-text` as the default embedding backend in
+README, SKILL, and the reference docs, and in code comments / CLI help. That has
+been false for some time: `scripts/model-client.ts` resolves embeddings to
+`openai:text-embedding-3-small` and its `Provider` type is
+`"openai" | "anthropic"` — Ollama is not a routable provider at all.
 
-## Deferred run — 2026-09-18
+## Findings
 
-- Objective: Index Vault daily run — preflight-paths, vault-index.ts index, before/after memory.ts stats.
-- Verified state: prior run `vault-index` (run_id 54c0b3a9-...) interrupted mid-run at revision 3; preflight-paths and stats-before completed and verified. No pending side effects, no active worker.
-- Attempt 1 (2026-09-18T04:12Z): `begin --recover --expected-revision 3` → `OPERATION_WINDOW_QUEUED` (exit 3). Restart drain window active.
-- Next action: on the next admitted invocation (after 06:16:46Z / 23:16 Arizona), run `begin --recover --expected-revision 3` again, then continue from `last_completed_step=stats-before`.
-- No partial work was started; nothing to recover.
+- [x] Docs were stale, not the runtime. `model-client.ts` never referenced Ollama.
+- [x] Two legacy benchmark scripts still made real Ollama HTTP calls:
+      `benchmark-v2-v3.ts`, `embedding-benchmark.ts`.
+- [x] `test-wikilink-enforcement.ts` uses `tool.ollama` as a synthetic wikilink
+      fixture entity — a test string, not a provider claim. Left as-is.
 
-## [MEM] Backfill Embeddings — deferred run 2026-09-22
+## Changes
 
-- Objective: Memory Pipeline A daily ingestion — `memory.ts index` (embedding backfill), `conversation-capture.ts --since 24h`, `conflict-resolver.ts stats`, `memory.ts stats`.
-- Verified state: resilience status showed prior run `completed` (2026-09-18, revision 7, all five checkpoints verified), no pending side effects, no active workers. `begin` returned `OPERATION_WINDOW_QUEUED` (exit 3): restart drain window active, queued until 2026-09-22T10:43:40Z (03:43 Arizona).
-- Next action: at the next admitted invocation (after 10:43:40Z / 03:43 Arizona), run `begin` for automation `fd6262f5-dd83-457b-b169-1bd3596a6052`, then preflight-paths, the four pipeline steps with a checkpoint after each, and `finish`.
-- No partial work was started; nothing to recover. No data loss: the next run's full embedding backfill and 24h capture window cover the gap.
+- [x] `README.md` — default routing, prerequisites, model table, env config (7)
+- [x] `SKILL.md` — frontmatter, feature list, model table, exit codes, config (16)
+- [x] `references/model-config.md` — supported providers, `OLLAMA_URL` (3)
+- [x] `references/supermemory-concepts.md` — local-vs-hosted framing (2)
+- [x] `BACKLOG.md` — MEM-101/102/104/202 descriptions, MEM-204 (5)
+- [x] `BENCHMARK_REPORT.md` — mark the run's embedding model as superseded (1)
+- [x] `SIDE_BY_SIDE_COMPARISON.md` — feature matrix + latency row (3)
+- [x] `scripts/benchmark-v2-v3.ts` — ported the embed lane to `model-client`'s
+      `embeddings()`; `--skip-ollama` kept as a legacy alias for
+      `--skip-embeddings` (18)
+- [x] `scripts/embedding-benchmark.ts` — hard retirement guard behind
+      `ZO_ALLOW_RETIRED_EMBED_BENCH=1` (6)
+- [x] Stale labels in `fact-extractor.ts`, `memory.ts`, `session-briefing.ts`,
+      `test-capture.ts`, `package.json` (6)
+
+## Verification
+
+- [x] `tsc --noEmit` — 0 errors
+- [x] `test-tarjan` 20/20, `test-wikilink-enforcement` 47/47, `test-capture`
+      32/32, `test-graph` 22/22, `graph-gate.test.ts` 10/10
+- [x] `embedding-benchmark.ts` exits 1 with the retirement message
+- [x] `benchmark-v2-v3.ts` live: `Embeddings: ✓ (1536d via openai/text-embedding-3-small)`
+
+## Notes
+
+The remaining 30 `ollama` hits are intentional: retirement notices, the guarded
+retired script, v2.0.0–v4.0.0 changelog rows (an accurate record of what
+shipped), and the wikilink test fixture.
+
+Four cleanup commits already existed on the local branch
+`feat/graph-primary-briefing-model` (`b303629`, `44b09fe`, `ef2aa11`, `8580ab8`)
+and were never merged to `main`. They were **not** cherry-picked: `b303629` also
+adds `trace.ts` / `mimir-academy-rag.ts` imports and an `expires_at` FTS filter,
+and conflicts with `main`'s `inlineFtsCandidates` refactor. Those functional
+changes are out of scope here and remain unmerged.

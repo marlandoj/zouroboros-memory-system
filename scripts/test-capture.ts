@@ -4,7 +4,7 @@
  *
  * Tests fact extraction parsing, dedup, contradiction detection,
  * co-capture linking, and capture log against a temporary SQLite database.
- * Does NOT require Ollama (mocks the extraction response).
+ * Does NOT require a live model provider (mocks the extraction response).
  *
  * Usage: bun test-capture.ts
  */

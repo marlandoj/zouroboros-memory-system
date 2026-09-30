@@ -107,7 +107,7 @@ export function getExtractorDb(): Database {
   return db;
 }
 
-// --- Extraction prompt (served through model-client) ---
+// --- Hosted generation ---
 
 const EXTRACTION_PROMPT = `You are a fact extractor. Given a conversation or document, extract structured, reusable facts.
 
@@ -265,7 +265,7 @@ export async function extractAndStoreFacts(
     `).run(
       id, persona, fact.entity, fact.key, fact.value, text2,
       fact.category, fact.decay_class, 1.0, `fact-extractor:${options.source}`,
-      nowSec, expiresAt, nowSec, fact.confidence,
+      now, expiresAt, nowSec, fact.confidence,
       JSON.stringify({ source_quote: fact.source_quote })
     );
 

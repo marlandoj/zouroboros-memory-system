@@ -4,7 +4,7 @@
 
 ---
 
-> Give your Zo Computer personas persistent memory with semantic understanding, a knowledge graph, and automatic fact extraction. Generation defaults route through OpenAI; embeddings use OpenAI `text-embedding-3-small` by default. No local model runtime is installed or required.
+> Give your Zo Computer personas persistent memory with semantic understanding, a knowledge graph, and automatic fact extraction. Generation and embedding workloads both route through hosted providers.
 >
 > Part of the [Zouroboros](https://github.com/marlandoj) ecosystem — self-improving AI development tools for Zo Computer.
 
@@ -30,7 +30,7 @@ This skill gives your AI personas long-term memory that persists across conversa
 - **Memory Gate** -- A routed model workload that decides whether each message needs stored memory, filtering 40-60% of messages and saving tokens
 - **5-Tier Adaptive Decay** -- Facts automatically promote or demote based on how often they're accessed
 - **Swarm Integration** -- Token-optimized memory for multi-agent workflows via [zouroboros-swarm-orchestrator](https://github.com/marlandoj/zouroboros-swarm-orchestrator), with 6-signal composite routing, auto-episode creation, and cognitive profiles
-- **Default Routing** -- Embeddings use OpenAI `text-embedding-3-small`; generation workloads resolve per-workload through `scripts/model-client.ts` and can be overridden by env
+- **Default Routing** -- Generation workloads default to OpenAI `gpt-4o-mini`; embeddings use hosted OpenAI `text-embedding-3-small`. No local model runtime is required.
 
 ---
 
@@ -47,7 +47,7 @@ Set up the memory system for my personas.
 Use the zo-memory-system skill.
 ```
 
-Zo will install the database, configure provider routing, and set up the embedding path if desired. You can then say things like:
+Zo will install the database, configure provider routing, and set up local embeddings if desired. You can then say things like:
 
 - *"Remember that our brand voice is concise, confident, and no fluff"*
 - *"What did we decide about the database for the FFB project?"*
@@ -104,7 +104,9 @@ bun scripts/add-persona.sh "ops-manager" "Operations leader"
 
 ## Prerequisites
 
-Routing uses hosted providers. Embeddings are OpenAI `text-embedding-3-small`; generation workloads resolve through `scripts/model-client.ts` with per-workload env overrides. No local model runtime is installed or required.
+Routing uses hosted providers. Embeddings are OpenAI `text-embedding-3-small`; generation
+workloads resolve through `scripts/model-client.ts` with per-workload env overrides. No
+local model runtime is installed or required.
 
 ```bash
 export OPENAI_API_KEY="your_api_key_here"
