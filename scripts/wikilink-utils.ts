@@ -225,7 +225,7 @@ export function resolveWikilinkTargets(
       "stable",
       0.5,
       `wikilink-stub:${options.sourceId}`,
-      now,
+      nowSecLocal,
       null, // stable = 90 days, but stubs are permanent placeholders
       nowSecLocal,
       0.3,

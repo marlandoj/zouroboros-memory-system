@@ -1,5 +1,9 @@
 # Supermemory Concepts — Design Notes
 
+> **Implementation status**: Supermemory itself is **not** installed or integrated. This file is
+> a design-reference describing which Supermemory ideas were reimplemented natively. No
+> Supermemory API key, client, or endpoint exists anywhere in this system.
+
 Adapted concepts from [Supermemory](https://supermemory.ai), the #1 ranked memory API on LongMemEval/LoCoMo/ConvoMem benchmarks.
 
 ## Core Insight
@@ -15,7 +19,7 @@ Supermemory's key feature is extracting facts from every AI turn automatically. 
 
 **Why post-conversation instead of per-turn:**
 - Full conversation context gives better extraction quality
-- 1 hosted model call per conversation vs. N calls per turn
+- 1 model call per conversation vs. N calls per turn
 - Natural batch for contradiction detection
 - Swarm runs produce a single transcript to capture once
 
@@ -27,7 +31,9 @@ Every auto-captured fact is tagged with `source: "auto-capture:{label}"` for aud
 
 ## What We Didn't Take
 
-- **Cloud API**: Supermemory is a hosted service. We also call hosted providers.
+- **Cloud API**: Supermemory is a hosted service. We run the inference through our own
+  model-client (OpenAI gpt-4o-mini and OpenRouter-hosted models) against a local SQLite
+  database, so no memory data leaves the host.
 - **Per-turn extraction**: Too much overhead for our use case. Post-conversation is better.
 - **Automatic forgetting**: Supermemory auto-deletes contradicted facts. We soft-deprecate (confidence *= 0.5) + create `supersedes` links, preserving history.
 - **Embedding-based dedup**: Supermemory uses cosine similarity > 0.9 for semantic dedup. We use exact hash matching for now (simpler, no false positives). Could add semantic dedup later.

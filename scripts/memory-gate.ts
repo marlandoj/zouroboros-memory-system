@@ -18,7 +18,7 @@ import { detectContinuation } from "./continuation";
 import { generate } from "./model-client";
 import { extractWikilinks } from "./wikilink-utils";
 import { getPersonaDomain } from "./domain-map.ts";
-import { generateBriefing } from "./session-briefing.ts";
+import { generateBriefing, type BriefingGenerator } from "./session-briefing.ts";
 import { logGateDecision } from "./scorecard.ts";
 
 const MEMORY_SCRIPT = "/home/workspace/Skills/zo-memory-system/scripts/memory.ts";
@@ -170,7 +170,10 @@ export function markBriefingInjected(): void {
  *
  * Returns null if persona is excluded or briefing generation fails.
  */
-export async function injectSessionBriefing(personaSlug: string): Promise<string | null> {
+export async function injectSessionBriefing(
+  personaSlug: string,
+  generator: BriefingGenerator = generateBriefing,
+): Promise<string | null> {
   // No persona exclusions — CLI transports (claude-code, gemini-cli, codex-cli)
   // should never be passed here; the rule maps them to the intended persona (e.g., "alaric").
   // Hermes is excluded at the rule level (omits --persona flag).
@@ -178,7 +181,7 @@ export async function injectSessionBriefing(personaSlug: string): Promise<string
   try {
     const domain = getPersonaDomain(personaSlug);
     const effectiveDomain = domain === "shared" || domain === "personal" ? undefined : domain;
-    const result = await generateBriefing(personaSlug, effectiveDomain);
+    const result = await generator(personaSlug, effectiveDomain);
 
     if (!result.briefing || result.briefing.startsWith("No recent activity")) {
       return null;

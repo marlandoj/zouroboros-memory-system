@@ -340,7 +340,7 @@ async function storeFacts(
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(id, "shared", fact.entity, fact.key, fact.value, text,
       fact.category, fact.decay_class, 1.0, `conversation-capture:${source}`,
-      now, expiresAt, nowSec, fact.confidence,
+      nowSec, expiresAt, nowSec, fact.confidence,
       JSON.stringify({ source_quote: fact.source_quote }));
 
     const embedding = await getEmbedding(text);

@@ -128,7 +128,7 @@ function testWithLinks() {
   assert(resultA.graphBoost > 0, "Fact A has graph boost (source of link)");
   assert(resultB.graphBoost > 0, "Fact B has graph boost (target of link)");
   assert(resultC.graphBoost === 0, "Fact C has no graph boost (unlinked)");
-  assert(resultB.graphBoost > resultA.graphBoost, "Target gets higher boost than source");
+  assert(resultB.graphBoost === resultA.graphBoost, "Associative link boosts source and target symmetrically");
 
   db.close();
 }

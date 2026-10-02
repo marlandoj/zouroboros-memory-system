@@ -669,7 +669,7 @@ Theme summary:`;
       db.prepare(
         `INSERT INTO facts (id, persona, entity, key, value, text, category, decay_class, importance, source, created_at, confidence, metadata)
          VALUES (?, 'shared', 'community.summary', ?, ?, ?, 'community_summary', 'stable', 0.8, 'graph.community-summarize', ?, 0.9, ?)`
-      ).run(cid, cid, summary, summary, now, metadata);
+      ).run(cid, cid, summary, summary, Math.floor(now / 1000), metadata);
 
       const linkStmt = db.prepare(
         `INSERT OR REPLACE INTO fact_links (source_id, target_id, relation, weight) VALUES (?, ?, 'summarizes', 1.0)`

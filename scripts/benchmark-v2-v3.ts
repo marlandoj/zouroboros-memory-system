@@ -147,7 +147,7 @@ function seedDatabase(db: Database): SeedFact[] {
     { id: "", entity: "decision.ffb-payments", key: "choice", value: "Using Stripe Connect for payment processing with webhook integration", category: "decision", decay: "permanent" },
     { id: "", entity: "project.ffb-site", key: "seo-audit", value: "Completed SEO audit showing missing meta descriptions on 12 product pages", category: "fact", decay: "active" },
     // Memory system cluster (should be linked)
-    { id: "", entity: "system.memory", key: "version", value: "Hybrid SQLite plus vector search with hosted embeddings", category: "fact", decay: "stable" },
+    { id: "", entity: "system.memory", key: "version", value: "GraphRAG knowledge graph plus FTS5 as the primary retrieval path, with graph-boosted ranking", category: "fact", decay: "stable" },
     { id: "", entity: "system.memory", key: "database", value: "SQLite with FTS5 and WAL mode at .zo/memory/shared-facts.db", category: "fact", decay: "permanent" },
     { id: "", entity: "decision.memory-cli", key: "choice", value: "Use memory.ts as canonical CLI, supports store search hybrid index stats", category: "decision", decay: "permanent" },
     { id: "", entity: "system.memory", key: "gate", value: "Model-routed memory gate filters 40-60% of messages saving tokens", category: "fact", decay: "stable" },

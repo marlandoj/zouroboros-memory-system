@@ -221,7 +221,7 @@ async function toolMemoryStore(args: {
                        importance, source, created_at, expires_at, last_accessed, confidence)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1.0, 'mcp', ?, ?, ?, 1.0)
   `).run(id, args.persona || "shared", args.entity, args.key || null,
-    args.value, text, category, decayClass, now, expiresAt, nowSec);
+    args.value, text, category, decayClass, nowSec, expiresAt, nowSec);
 
   const embedding = await getEmbedding(text);
   if (embedding) {

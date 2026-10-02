@@ -31,7 +31,7 @@
 // Cost tracking: every call returns { content, latency_ms, provider, model, cost_usd }
 // =============================================================================
 
-export type Provider = "openai" | "anthropic";
+export type Provider = "openai" | "anthropic" | "openrouter";
 export type Workload =
   | "gate" | "hyde" | "extraction"
   | "summarization" | "briefing"
@@ -88,7 +88,7 @@ const WORKLOAD_MAX_TOKENS: Record<Workload, number> = {
 
 // ─── Model spec parser ────────────────────────────────────────────────────────
 
-const ALL_PROVIDERS: Provider[] = ["openai", "anthropic"];
+const ALL_PROVIDERS: Provider[] = ["openai", "anthropic", "openrouter"];
 
 const KNOWN_OPENAI_MODELS = new Set([
   "gpt-4o", "gpt-4o-mini", "gpt-4o-large", "gpt-4-turbo", "gpt-4",
@@ -172,7 +172,22 @@ export function resolveConfiguredModel(workload: Workload, explicitModel?: strin
 
 // ─── OpenAI ───────────────────────────────────────────────────────────────────
 
-const OPENAI_TOKEN = process.env.OPENAI_API_KEY || process.env.ZO_OPENAI_API_KEY || "";
+// Self-heal: non-interactive zsh (Claude Code Bash tool) ignores BASH_ENV, so
+// the ambient env can lack the key — fall back to /root/.zo_secrets, matching
+// the pattern in mcp-server-http.ts / qdrant-rag-mcp.ts.
+function resolveOpenAIToken(): string {
+  const fromEnv = process.env.OPENAI_API_KEY || process.env.ZO_OPENAI_API_KEY || "";
+  if (fromEnv && !fromEnv.startsWith("reference secret by name")) return fromEnv;
+  try {
+    const { readFileSync } = require("fs");
+    const secrets = readFileSync(process.env.ZO_SECRETS_PATH || "/root/.zo_secrets", "utf-8");
+    const m = secrets.match(/^(?:export\s+)?OPENAI_API_KEY=["']?([^"'\n]+)["']?\s*$/m);
+    if (m) return m[1];
+  } catch {}
+  return "";
+}
+
+const OPENAI_TOKEN = resolveOpenAIToken();
 
 async function openaiGenerate(opts: GenerateOptions): Promise<GenerateResult> {
   if (!OPENAI_TOKEN) throw new Error("OPENAI_API_KEY not set");
@@ -289,11 +304,88 @@ async function anthropicEmbeddings(_text: string): Promise<EmbedResult> {
   return { embedding: [], latency_ms: 0, provider: "anthropic", model: "unknown", cost_usd: 0, error: "Anthropic embeddings not supported via Zo OAuth" };
 }
 
-// ─── Health checks ────────────────────────────────────────────────────────────
+// --- OpenRouter ---------------------------------------------------------------
+
+// OPENROUTER_API_KEY is set on the memory-gate service and in /root/.zo_secrets,
+// but nothing read it until now: an "openrouter:" spec was parsed as provider
+// "openai" and its model id was posted to api.openai.com.
+function resolveOpenRouterToken(): string {
+  const fromEnv = process.env.OPENROUTER_API_KEY || process.env.ZO_OPENROUTER_API_KEY || "";
+  if (fromEnv && !fromEnv.startsWith("reference secret by name")) return fromEnv;
+  try {
+    const { readFileSync } = require("fs");
+    const secrets = readFileSync(process.env.ZO_SECRETS_PATH || "/root/.zo_secrets", "utf-8");
+    const m = secrets.match(/^(?:export\s+)?OPENROUTER_API_KEY=["']?([^"'\n]+)["']?\s*$/m);
+    if (m) return m[1];
+  } catch {}
+  return "";
+}
+
+const OPENROUTER_TOKEN = resolveOpenRouterToken();
+
+async function openrouterGenerate(opts: GenerateOptions): Promise<GenerateResult> {
+  if (!OPENROUTER_TOKEN) throw new Error("OPENROUTER_API_KEY not set");
+  const start = Date.now();
+  const { model } = resolveModel(opts.workload, opts.model);
+  const temperature = opts.temperature ?? WORKLOAD_TEMP[opts.workload];
+
+  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${OPENROUTER_TOKEN}`,
+      "HTTP-Referer": "https://marlandoj.zo.computer",
+      "X-Title": "zo-memory-system",
+    },
+    body: JSON.stringify({
+      model,
+      messages: [{ role: "user", content: opts.prompt }],
+      temperature,
+      max_tokens: opts.maxTokens ?? 1024,
+    }),
+    signal: AbortSignal.timeout(60_000),
+  });
+
+  const latency = Date.now() - start;
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`OpenRouter error ${res.status}: ${body.slice(0, 300)}`);
+  }
+  const data = (await res.json()) as {
+    choices?: Array<{ message?: { content?: string } }>;
+    usage?: { completion_tokens?: number; cost?: number };
+  };
+  const text = data.choices?.[0]?.message?.content ?? "";
+
+  // OpenRouter reports per-request cost in usage.cost when credits are enabled;
+  // fall back to a nominal estimate so cost_usd is never a silent zero.
+  const costUsd =
+    typeof data.usage?.cost === "number"
+      ? data.usage.cost
+      : ((data.usage?.completion_tokens ?? 0) / 1_000_000) * 1.0;
+
+  return { content: text, latency_ms: latency, provider: "openrouter", model, cost_usd: costUsd };
+}
+
+// --- Health checks --- ────────────────────────────────────────────────────────────
 
 export async function modelHealthCheck(provider: Provider): Promise<HealthResult> {
   const start = Date.now();
   try {
+    if (provider === "openrouter") {
+      if (!OPENROUTER_TOKEN) {
+        return { available: false, latency_ms: Date.now() - start, error: "OPENROUTER_API_KEY not set" };
+      }
+      const resp = await fetch("https://openrouter.ai/api/v1/models", {
+        headers: { "Authorization": `Bearer ${OPENROUTER_TOKEN}` },
+        signal: AbortSignal.timeout(5000),
+      });
+      return {
+        available: resp.ok,
+        latency_ms: Date.now() - start,
+        error: resp.ok ? undefined : `HTTP ${resp.status}`,
+      };
+    }
     if (provider === "openai" && OPENAI_TOKEN) {
       const resp = await fetch("https://api.openai.com/v1/models", {
         headers: { "Authorization": `Bearer ${OPENAI_TOKEN}` },
@@ -350,8 +442,9 @@ export async function generate(opts: GenerateOptions): Promise<GenerateResult> {
   let result: GenerateResult;
   try {
     switch (provider) {
-      case "openai":    result = await openaiGenerate(opts); break;
-      case "anthropic": result = await anthropicGenerate(opts); break;
+      case "openai":     result = await openaiGenerate(opts); break;
+      case "anthropic":  result = await anthropicGenerate(opts); break;
+      case "openrouter": result = await openrouterGenerate(opts); break;
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -367,5 +460,6 @@ export async function embeddings(text: string, explicitModel?: string): Promise<
   switch (provider) {
     case "openai":    { const r = await openaiEmbeddings(text, model); logEmbedCall(r); return r; }
     case "anthropic": return anthropicEmbeddings(text);
+    case "openrouter": throw new Error("Embeddings are not routed via OpenRouter; use an openai: embedding model");
   }
 }
