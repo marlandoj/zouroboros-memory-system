@@ -31,7 +31,7 @@ describe("P0-1 write-gate classifier (T2)", () => {
     { name: "mimir source + low conf", input: { value: "synthesized claim that may be stale now", source: "mimir-synthesis", confidence: 0.34 }, want: "hold" },
     // allow: normal durable facts
     { name: "normal fact", input: { value: "Aventurine Capital is spelled with a gemstone, not Adventuring" }, want: "allow" },
-    { name: "auto source but high conf", input: { value: "JHF options layer uses polygon_options cache", source: "fact-extractor", confidence: 0.9 }, want: "allow" },
+    { name: "auto source but high conf", input: { value: "The options layer uses polygon_options cache", source: "fact-extractor", confidence: 0.9 }, want: "allow" },
     { name: "curated source low conf is NOT held", input: { value: "user prefers terse responses with no summaries", source: "curated", confidence: 0.1 }, want: "allow" },
     { name: "auto source null conf is NOT held", input: { value: "some auto fact with unknown confidence value", source: "auto", confidence: null }, want: "allow" },
   ];
@@ -139,7 +139,7 @@ describe("P0-1 dedup-merge (T3)", () => {
     )`);
     const createdAt = 1_700_000_000_000;
     db.prepare("INSERT INTO facts (id, entity, value, created_at, last_accessed) VALUES (?,?,?,?,?)")
-      .run("f1", "JHF", "options layer uses polygon cache", createdAt, 1_700_000_000);
+      .run("f1", "trading", "options layer uses polygon cache", createdAt, 1_700_000_000);
 
     const before = (db.prepare("SELECT COUNT(*) c FROM facts").get() as { c: number }).c;
     applyMerge(db, "f1", 1_700_000_999);

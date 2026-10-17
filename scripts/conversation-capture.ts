@@ -48,7 +48,7 @@ const MAX_TRANSCRIPT_TOKENS = 6000;
 const SKIP_DIRS = new Set([
   "read_webpage", "browser_agent", "node_modules", ".git",
   "venv", "lib64", "dist-info", "site-packages",
-  "jhf_backup_extract", "email_attachment", "openclaw_files_prototype",
+  "trading_backup_extract", "email_attachment", "openclaw_files_prototype",
 ]);
 const ALLOWED_EXTENSIONS = new Set([".md", ".txt", ".json"]);
 const SKIP_FILES = new Set([
