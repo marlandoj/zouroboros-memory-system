@@ -1,18 +1,18 @@
 ---
 name: zo-memory-system
-description: Hybrid SQLite + Vector persona memory system for Zo Computer. Episodic memory with temporal queries, graph-boosted search, BFS path finding, knowledge gap analysis, auto-capture pipeline, and per-workload model routing. Embeddings use hosted OpenAI `text-embedding-3-small`; generation workloads resolve per-workload through `scripts/model-client.ts`.
-compatibility: Created for Zo Computer. Requires Bun and `OPENAI_API_KEY` for hosted embeddings and default generation workloads. No local model runtime is installed or required.
+description: Hybrid SQLite + Vector persona memory system. Episodic memory with temporal queries, graph-boosted search, BFS path finding, knowledge gap analysis, auto-capture pipeline, and per-workload model routing. Embeddings use hosted OpenAI `text-embedding-3-small`; generation workloads resolve per-workload through `scripts/model-client.ts`.
+compatibility: Runs anywhere Bun runs. Requires Bun and `OPENAI_API_KEY` for hosted embeddings and default generation workloads. No local model runtime is installed or required.
 metadata:
-  author: marlandoj.zo.computer
-  updated: 2026-03-29
+  author: marlandoj
+  updated: 2026-11-19
   version: 4.0.0
 ---
 
-> **DEPRECATED:** This standalone skill has been migrated into the [Zouroboros monorepo](https://github.com/marlandoj/zouroboros). The canonical location is now `zouroboros/packages/`. This copy is kept for backwards compatibility but will not receive updates.
+> **Status (2026-11-19):** This is the standalone home of the Zouroboros memory system; the same system also ships as a package inside [muse-zouroboros](https://github.com/marlandoj/muse-zouroboros). It was originally built for the retired Zo Computer platform — the documentation was rewritten platform-neutral on 2026-11-19. Code-level identifiers that still carry the legacy prefix (the skill's registered name, the `ZO_*` environment variables) are documented as-is because the code reads them.
 
-# Zo Memory System Skill v4.0.0
+# Zouroboros Memory System Skill v4.0.0
 
-Give your Zo personas persistent memory with semantic understanding, graph intelligence, and automatic fact capture.
+Give your AI personas persistent memory with semantic understanding, graph intelligence, and automatic fact capture.
 
 **v4.0 Updates (Q2-Q4 2026):** Context budget awareness (token tracking + proactive checkpointing), recursive episode summarization (model-routed FIFO compression), metrics dashboard (latency/recall/capture/gate stats), iterative multi-hop retrieval (confidence-based BFS with query refinement), cross-persona memory sharing (pools + inheritance hierarchy), conflict resolution (semantic/temporal detection + provenance tracking), enhanced knowledge graph (typed relations, cycle detection, DOT export, co-occurrence inference), embedding model benchmarking (3-model comparison + recall measurement).
 
@@ -54,7 +54,7 @@ Give your Zo personas persistent memory with semantic understanding, graph intel
 - **Memory consolidation** — Automatic deduplication and merging of related facts
 - **Swarm integration** — Token-optimized memory for multi-agent workflows
 - **Memory gate** — model-routed relevance filter (memory-gate.ts) that classifies messages before searching; defaults to OpenAI
-- **Always-on injection** — Zo rule integration for automatic context injection on every message
+- **Always-on injection** — harness rule integration for automatic context injection on every message
 - **Gate-filtered savings** — 40-60% of messages filtered as not needing memory (zero extra tokens)
 - **Health checks** — provider connectivity and model validation at startup
 - **Fetch timeouts** — provider call timeouts prevent indefinite hangs
@@ -98,8 +98,9 @@ export OPENAI_API_KEY="your_api_key_here"
 ## Quick Start
 
 ```bash
-# Initialize the database
-cd /home/workspace/Skills/zo-memory-system
+# Initialize the database (from your clone of this repo)
+cd zouroboros-memory-system
+export ZO_MEMORY_DB="$HOME/.zouroboros/memory/shared-facts.db"   # choose your database location
 bun scripts/memory.ts init
 
 # Add memory to a persona
@@ -229,9 +230,9 @@ Path found (2 hops):
 
   [project.ffb-site.name] "FFB website redesign project"
     -->depends_on
-  [decision.hosting] "Decided to use Zo hosting"
+  [decision.hosting] "Decided to use cloud hosting"
     -->related
-  [system.zo.infrastructure] "Zo Computer infrastructure setup"
+  [system.infrastructure] "Hosting infrastructure setup"
 ```
 
 ### Knowledge Gaps Analysis
@@ -251,14 +252,14 @@ Linked facts: 14 (19.2%)
 Orphan facts: 59 (80.8%)
 
 Dead ends (targets only, never source):
-  - [decision.hosting] "Decided to use Zo hosting" (2 inbound, 0 outbound)
+  - [decision.hosting] "Decided to use cloud hosting" (2 inbound, 0 outbound)
 
 Weakly linked (only 1 connection):
   - [project.ffb-api] "FFB API integration" (1 link)
 
 Connected components: 3
   Cluster 1 (8 facts): hub = [project.ffb-site] (5 links)
-  Cluster 2 (4 facts): hub = [system.zo-infrastructure] (3 links)
+  Cluster 2 (4 facts): hub = [system.infrastructure] (3 links)
   Cluster 3 (2 facts): hub = [decision.memory-cli] (1 link)
 
 Suggested: 12 orphan facts share entities with linked facts and could be connected.
@@ -508,7 +509,7 @@ Expose the memory system as MCP tools for Claude Desktop, Cursor, Gemini, Codex,
 
 ### HTTP Server (Recommended)
 
-The HTTP MCP server runs as a Zo hosted service with auto-restart and HTTPS.
+The HTTP MCP server runs as a long-lived local service; run it under your service manager of choice (systemd, launchd, a process supervisor) if you want auto-restart, and put it behind a reverse proxy if you need HTTPS.
 
 ```bash
 # Start locally (for testing)
@@ -521,8 +522,6 @@ curl http://localhost:48400/health
 POST http://localhost:48400/mcp
 ```
 
-**Hosted service:** `https://zo-memory-mcp-marlandoj.zocomputer.io`
-- Service ID: `svc_PXkgBzRdH8M`
 - Local port: 48400
 - Health: `/health`
 - MCP: `/mcp` (Streamable HTTP transport)
@@ -552,7 +551,7 @@ bun scripts/memory.ts mcp          # Via CLI
 ```json
 {
   "mcpServers": {
-    "zo-memory": {
+    "zouroboros-memory": {
       "type": "http",
       "url": "http://localhost:48400/mcp"
     }
@@ -564,9 +563,9 @@ bun scripts/memory.ts mcp          # Via CLI
 ```json
 {
   "mcpServers": {
-    "zo-memory": {
+    "zouroboros-memory": {
       "command": "bun",
-      "args": ["/home/workspace/Skills/zo-memory-system/scripts/mcp-server.ts"]
+      "args": ["/path/to/zouroboros-memory-system/scripts/mcp-server.ts"]
     }
   }
 }
@@ -576,7 +575,7 @@ bun scripts/memory.ts mcp          # Via CLI
 ```json
 {
   "mcpServers": {
-    "zo-memory": {
+    "zouroboros-memory": {
       "url": "http://localhost:48400/mcp",
       "type": "http",
       "trust": true
@@ -587,12 +586,12 @@ bun scripts/memory.ts mcp          # Via CLI
 
 **Codex** (`~/.codex/config.toml`):
 ```toml
-[mcp_servers.zo-memory]
+[mcp_servers.zouroboros-memory]
 url = "http://localhost:48400/mcp"
 startup_timeout_sec = 10
 ```
 
-**Swarm bridge:** The Claude Code bridge script (`claude-code-bridge.sh`) pre-approves all `mcp__zo-memory__*` tools via `--allowedTools`.
+**Swarm bridge:** The Claude Code bridge script (`claude-code-bridge.sh`) pre-approves all `mcp__zouroboros-memory__*` tools via `--allowedTools`.
 
 ---
 
@@ -668,12 +667,12 @@ bun scripts/memory-gate.ts "update the supplier scorecard"
 | 2 | No memory needed (greeting, general knowledge, self-contained request) |
 | 3 | Memory needed but no results found |
 
-### Zo rule integration
+### Always-on gate via harness rules
 
-Create an always-applied Zo rule that runs the gate on every message:
+Create an always-applied rule in your harness (an always-on instruction, hook, or rule your agent runtime supports) that runs the gate on every message:
 
 ```
-Run: bun /home/workspace/Skills/zo-memory-system/scripts/memory-gate.ts "<message>"
+Run: bun /path/to/zouroboros-memory-system/scripts/memory-gate.ts "<message>"
 - Exit 0: inject stdout as background context
 - Exit 2: skip (no memory needed)
 - Exit 3: skip (no results)
@@ -804,7 +803,7 @@ bun scripts/test-capture.ts
 
 ## Related Skills
 
-- `zo-swarm-orchestrator` — Multi-agent orchestration with token optimization
+- `zouroboros-swarm` — Multi-agent orchestration with token optimization
 
 ## Design References
 
