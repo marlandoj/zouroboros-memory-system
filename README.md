@@ -1,12 +1,12 @@
 # Zouroboros Memory System
 
-> **Status (2026-04-27):** This repository is the **canonical home for the runtime skill** that powers Zo Computer's memory daemon, gate hook, capture pipeline, knowledge graph, vault, and persona memory files. The [Zouroboros monorepo](https://github.com/marlandoj/zouroboros) `packages/memory/` is the **library** used by npm consumers and bench adapters; it currently lags this skill on graph/community/vault features. A future consolidation pass will reconcile the two — see [issues](https://github.com/marlandoj/zouroboros-memory-system/issues) for status. Until then, file runtime/skill issues here and library/SDK issues against the monorepo.
+> **Status (2026-11-19):** This repository is the **standalone home of the Zouroboros memory system** — the runtime skill and scripts that power the memory daemon, gate hook, capture pipeline, knowledge graph, and persona memory files. The same system also ships as a package inside [muse-zouroboros](https://github.com/marlandoj/muse-zouroboros). It runs on any machine with Bun: no specific hosting platform is required. (Historical note: it was originally built for the retired Zo Computer platform; the documentation was rewritten platform-neutral on 2026-11-19. Some code-level identifiers — the `ZO_*` environment variables and the skill's registered name — still carry the legacy prefix; they are documented as-is because the code reads them.)
 
 ---
 
-> Give your Zo Computer personas persistent memory with semantic understanding, a knowledge graph, and automatic fact extraction. Generation and embedding workloads both route through hosted providers.
+> Give your AI personas persistent memory with semantic understanding, a knowledge graph, and automatic fact extraction. Generation and embedding workloads both route through hosted providers.
 >
-> Part of the [Zouroboros](https://github.com/marlandoj) ecosystem — self-improving AI development tools for Zo Computer.
+> Part of the [Zouroboros](https://github.com/marlandoj) ecosystem — self-improving AI development tools.
 
 [![Version](https://img.shields.io/badge/version-3.2.0-blue?style=flat-square)](https://github.com/marlandoj/zouroboros-memory-system)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -36,18 +36,18 @@ This skill gives your AI personas long-term memory that persists across conversa
 
 ## Quick Start
 
-There are two ways to use this skill: through the **Zo chat window** (natural language) or the **terminal** (CLI scripts).
+There are two ways to use this skill: through **your AI assistant** (natural language, with this skill installed) or the **terminal** (CLI scripts).
 
-### Option 1: Natural Language via Zo Chat
+### Option 1: Natural Language via Your Assistant
 
-The fastest way. Open your Zo chat window and type:
+The fastest way. With this skill installed for your assistant, ask:
 
 ```
 Set up the memory system for my personas.
-Use the zo-memory-system skill.
+Use the memory system skill.
 ```
 
-Zo will install the database, configure provider routing, and set up local embeddings if desired. You can then say things like:
+Your assistant will install the database, configure provider routing, and set up embeddings if desired. You can then say things like:
 
 - *"Remember that our brand voice is concise, confident, and no fluff"*
 - *"What did we decide about the database for the FFB project?"*
@@ -57,17 +57,20 @@ Zo will install the database, configure provider routing, and set up local embed
 - *"Run a knowledge gap analysis on my stored facts"*
 - *"Extract facts from today's conversation and store them"*
 
-Zo handles the CLI commands, search queries, and fact storage automatically.
+Your assistant handles the CLI commands, search queries, and fact storage automatically.
 
 ### Option 2: Terminal (CLI Scripts)
 
 #### Install and initialize
 
 ```bash
-cd /home/workspace/Skills/zo-memory-system
-./scripts/install.sh
+git clone https://github.com/marlandoj/zouroboros-memory-system
+cd zouroboros-memory-system
+export ZO_MEMORY_DB="$HOME/.zouroboros/memory/shared-facts.db"   # choose your database location
 bun scripts/memory.ts init
 ```
+
+(`./scripts/install.sh` remains available as a workspace installer; it copies the scripts into a workspace memory directory.)
 
 #### Store a fact
 
@@ -147,7 +150,7 @@ bun scripts/graph.ts find-connections --from "project.ffb-site" --to "decision.h
 bun scripts/graph.ts knowledge-gaps
 ```
 
-Or via Zo chat:
+Or ask your assistant:
 
 ```
 Link the FFB website fact to our hosting decision with a "depends_on" relationship.
@@ -167,7 +170,7 @@ bun scripts/auto-capture.ts --input conversation.md --dry-run
 bun scripts/auto-capture.ts --input conversation.md --source "chat:2026-03-04"
 ```
 
-Or via Zo chat:
+Or ask your assistant:
 
 ```
 Extract facts from today's conversation and store them in memory.
@@ -221,7 +224,7 @@ bun scripts/memory.ts episodes --entity "executor.claude-code" --since "7 days a
 bun scripts/memory.ts trends --entity "executor.claude-code" --granularity week
 ```
 
-Or via Zo chat:
+Or ask your assistant:
 
 ```
 What swarm failures happened this week?
@@ -267,9 +270,9 @@ Add to Claude Desktop or `.claude.json`:
 ```json
 {
   "mcpServers": {
-    "zo-memory": {
+    "zouroboros-memory": {
       "command": "bun",
-      "args": ["/home/workspace/Skills/zo-memory-system/scripts/mcp-server.ts"]
+      "args": ["/path/to/zouroboros-memory-system/scripts/mcp-server.ts"]
     }
   }
 }
@@ -313,7 +316,7 @@ Supported sources: ChatGPT JSON exports, Obsidian markdown vaults (with frontmat
 
 ## Implementation Examples
 
-### Example 1: Store brand preferences (Zo chat)
+### Example 1: Store brand preferences (assistant)
 
 ```
 Remember these preferences for all my personas:
@@ -336,7 +339,7 @@ bun scripts/memory.ts store \
 bun scripts/memory.ts hybrid "why did we pick the database"
 ```
 
-### Example 3: Knowledge graph exploration (Zo chat)
+### Example 3: Knowledge graph exploration (assistant)
 
 ```
 How is my FFB website project connected to the hosting decisions we made?
@@ -347,7 +350,7 @@ What knowledge gaps exist in my stored facts?
 ### Example 4: Auto-capture after a swarm run
 
 ```
-Extract facts from the swarm output at /home/workspace/Reports/ffb-review.md
+Extract facts from the swarm output at ~/Reports/ffb-review.md
 and store them in memory under the "ffb-project" persona.
 ```
 
